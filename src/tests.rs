@@ -1,6 +1,8 @@
 use std::time;
 
-use crate::Registry;
+use hashbrown::HashMap;
+
+use crate::{Registry, Entity, Without};
 
 pub struct DropTest {
     s: u32,
@@ -12,7 +14,9 @@ impl Drop for DropTest {
     }
 }
 
-#[test]
+pub struct Tuple([usize; 3]);
+
+//#[test]
 fn it_works() {
     let mut registry = Registry::default();
 
@@ -39,11 +43,17 @@ fn it_works() {
 #[test]
 fn it_works2() {
     let mut registry = Registry::default();
-
-    for i in 0..10000usize {
+    let mut mapping = HashMap::new();
+    for i in 0..1000usize {
         let e = registry.spawn();
-        registry.insert(e, "Hello, e!".to_owned() + &i.to_string());
-        registry.insert(e, i);
+        if i % 5 == 0 {
+            registry.insert(e, "Hello, e!".to_owned() + &i.to_string());
+        }
+        registry.insert(e, Tuple([i, i+5, i+27]));
+        if i % 10 == 0 {
+            registry.insert(e, i);
+        }
+        mapping.insert(e, i);
     }
 
     use crate::QueryExt;
@@ -57,6 +67,47 @@ fn it_works2() {
         last = now;
     }
 
+    
+    for (entity, _,  Tuple([i1, i2, i3]), string) in <(Entity, Without<usize>, &Tuple, Option<&String>,)>::query(&mut registry){
+        if let Some(s) = string {
+            dbg!(s);
+        } else {
+            dbg!("none");
+        }
+        assert_eq!(i1, mapping.get(&entity).unwrap());
+        assert_eq!(*i2, mapping.get(&entity).unwrap() + 5);
+        assert_eq!(*i3, mapping.get(&entity).unwrap() + 27);
+    }
+    let mut delete = vec![];
+    for (entity, i) in mapping.iter().step_by(7) {
+        registry.despawn(*entity);
+        delete.push(*entity);
+    }
+    for entity in delete {
+        mapping.remove(&entity);
+    }
+    for i in 1000..2000usize {
+        let e = registry.spawn();
+        if i % 5 == 0 {
+            registry.insert(e, "Hello, e!".to_owned() + &i.to_string());
+        }
+        registry.insert(e, Tuple([i, i+5, i+27]));
+        if i % 10 == 0 {
+            registry.insert(e, i);
+        }
+        mapping.insert(e, i);
+    }
+    for (entity, _,  Tuple([i1, i2, i3]), string) in <(Entity, Without<usize>, &Tuple, Option<&String>,)>::query(&mut registry){
+        if let Some(s) = string {
+            dbg!(s);
+        } else {
+            dbg!("none");
+        }
+        assert_eq!(i1, mapping.get(&entity).unwrap());
+        assert_eq!(*i2, mapping.get(&entity).unwrap() + 5);
+        assert_eq!(*i3, mapping.get(&entity).unwrap() + 27);
+    }
+    
     let mut avg = timing.iter().cloned().fold(0, |sum, x| sum + x) as f64 / timing.len() as f64;
 
     dbg!(avg); //534 nanoseconds

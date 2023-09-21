@@ -38,6 +38,7 @@ pub struct Entity(Identifier, Generation);
 pub struct Entities {
     cursor: Box<dyn Iterator<Item = Identifier> + 'static + Send + Sync>,
     free: HashSet<Entity>,
+    dead: HashSet<Entity>,
 }
 
 impl Default for Entities {
@@ -45,6 +46,7 @@ impl Default for Entities {
         Self {
             cursor: Box::new(0..),
             free: HashSet::new(),
+            dead: HashSet::new(),
         }
     }
 }
@@ -60,6 +62,10 @@ impl Entities {
     }
 
     pub fn despawn(&mut self, entity: Entity) -> bool {
+        if self.dead.contains(&entity) {
+            return false;
+        }
+        self.dead.insert(entity);
         let Entity(identifier, generation) = entity;
         let entity = Entity(identifier, generation + 1);
         if self.free.contains(&entity) {
@@ -82,6 +88,7 @@ pub enum ArchetypeState {
 pub struct ArchetypeInfo {
     ty: TypeId,
     size: usize,
+    name: &'static str,
     state: ArchetypeState
 }
 
@@ -261,6 +268,7 @@ impl<'a, T: Component> Queryable<'a> for Without<T> {
             ArchetypeInfo {
                 ty: any::TypeId::of::<T>(),
                 size: mem::size_of::<T>(),
+                name: any::type_name::<T>(),
                 state: ArchetypeState::Without,
             },
         );
@@ -314,6 +322,7 @@ impl<'a, T: Queryable<'static>> Queryable<'a> for Option<T> {
             idx,
             ArchetypeInfo {
                 ty: any::TypeId::of::<T::Target>(),
+                name: any::type_name::<T::Target>(),
                 size: mem::size_of::<T::Target>(),
                 state: ArchetypeState::Optional,
             },
@@ -387,6 +396,7 @@ impl<'a, T: Component> Queryable<'a> for &'a T {
             ArchetypeInfo {
                 ty: any::TypeId::of::<T>(),
                 size: mem::size_of::<T>(),
+                name: any::type_name::<T>(),
                 state: ArchetypeState::Type,
             },
         );
@@ -444,6 +454,7 @@ impl<'a, T: Component> Queryable<'a> for &'a mut T {
             ArchetypeInfo {
                 ty: any::TypeId::of::<T>(),
                 size: mem::size_of::<T>(),
+                name: any::type_name::<T>(),
                 state: ArchetypeState::Type,
             },
         );
@@ -824,6 +835,7 @@ impl Registry {
         };
 
         if archetype.translation(component.id()).is_some() {
+            self.mapping.insert(entity, archetype);
             return;
         }
 
@@ -865,6 +877,7 @@ impl Registry {
             ArchetypeInfo {
                 ty: component.id(),
                 size: component.size(),
+                name: any::type_name::<T>(),
                 state: ArchetypeState::Type,
             },
         );
@@ -895,10 +908,12 @@ impl Registry {
         };
 
         if archetype.len == 0 {
+            self.mapping.insert(entity, archetype);
             None?;
         }
 
         if archetype.translation(any::TypeId::of::<T>()).is_none() {
+            self.mapping.insert(entity, archetype);
             None?
         }
 
@@ -922,10 +937,10 @@ impl Registry {
         let idx = if result.is_ok() {
             result.unwrap()
         } else {
+            self.mapping.insert(entity, archetype);
             None?
         };
 
-        self.mapping.remove(&entity);
         let (mut data, mut table) = self.storage.get_mut(&archetype).unwrap().remove(entity);
 
         let size_up_to = archetype.size_up_to(idx);
@@ -996,5 +1011,19 @@ impl Registry {
             let ptr = storage.data.as_mut_ptr().add(total_size * index + translation);
             Some((ptr as *mut T).as_mut().unwrap())
         }
+    }
+    pub fn dbg_print(&self, entity: Entity) {
+        use std::io::Write;
+        let Some(archetype) = self.mapping.get(&entity).cloned() else {
+            println!("entity does not have an archetype mapping.");
+            std::io::stdout().flush().unwrap();
+            return;
+        };
+        println!("archetype len: {}", archetype.len);
+        for (i, name) in archetype.info
+        .iter().filter_map(|x| *x).map(|x| x.name).enumerate() {
+            println!("component {}: {}", i, name);
+        }
+        std::io::stdout().flush().unwrap();
     }
 }

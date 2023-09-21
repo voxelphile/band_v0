@@ -20,7 +20,21 @@ pub trait Component: 'static + Send + Sync {
     fn size(&self) -> usize;
 }
 
+pub trait Resource: 'static + Send + Sync {
+    fn id(&self) -> TypeId;
+    fn size(&self) -> usize;
+}
+
 impl<T: 'static + Send + Sync> Component for T {
+    fn id(&self) -> TypeId {
+        any::TypeId::of::<Self>()
+    }
+    fn size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+}
+
+impl<T: 'static + Send + Sync> Resource for T {
     fn id(&self) -> TypeId {
         any::TypeId::of::<Self>()
     }
@@ -810,6 +824,7 @@ pub struct Registry {
     entities: Entities,
     mapping: HashMap<Entity, Archetype>,
     storage: HashMap<Archetype, Storage>,
+    resources: HashMap<TypeId, Vec<u8>>,
 }
 
 impl Registry {
@@ -829,6 +844,32 @@ impl Registry {
             }
         }
     }
+    pub fn create<T: Resource>(&mut self, resource: T) {
+        let bytes =
+        unsafe { slice::from_raw_parts(&resource as *const _ as *const u8, resource.size()) }
+            .to_vec();
+
+        self.resources.insert(resource.id(), bytes);
+
+        let _ = ManuallyDrop::new(resource);
+    }
+    pub fn resource<'a, 'b, T: Resource>(&'a mut self) -> Option<&'b T> {
+        let Some(bytes) = self.resources.get(&any::TypeId::of::<T>()) else {
+            None?
+        };
+
+        unsafe { Some((bytes.as_ptr() as *const T).as_ref().unwrap()) }
+    }   
+    
+    pub fn resource_mut<'a, 'b, T: Resource>(&'a mut self) -> Option<&'b mut T> {
+        
+        let Some(bytes) = self.resources.get_mut(&any::TypeId::of::<T>()) else {
+            None?
+        };
+
+        unsafe { Some((bytes.as_mut_ptr() as *mut T).as_mut().unwrap()) }
+    }
+    
     pub fn insert<T: Component>(&mut self, entity: Entity, component: T) {
         let Some(mut archetype) = self.mapping.remove(&entity) else {
             return;

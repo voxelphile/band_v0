@@ -103,7 +103,7 @@ pub struct ArchetypeInfo {
     ty: TypeId,
     size: usize,
     name: &'static str,
-    state: ArchetypeState
+    state: ArchetypeState,
 }
 
 #[derive(Default, PartialEq, Eq, Hash, Clone, Copy)]
@@ -143,9 +143,13 @@ impl Archetype {
             .take(superset.len)
             .cloned()
             .map(Option::unwrap)
-            .all(|info| if info.state == ArchetypeState::Without {
-                !ids.contains(&info.ty)
-            } else {ids.contains(&info.ty) || matches!(info.state, ArchetypeState::Optional) })
+            .all(|info| {
+                if info.state == ArchetypeState::Without {
+                    !ids.contains(&info.ty)
+                } else {
+                    ids.contains(&info.ty) || matches!(info.state, ArchetypeState::Optional)
+                }
+            })
     }
     fn total_size(&self) -> usize {
         self.size_up_to(self.len)
@@ -159,7 +163,6 @@ impl Archetype {
             .map(Option::unwrap)
             .fold(0, |sum, info| sum + info.size)
     }
-
 }
 
 pub struct Storage {
@@ -169,7 +172,6 @@ pub struct Storage {
     secondary_mapping: HashMap<Entity, usize>,
     table: Vec<Vec<Box<dyn Component>>>,
 }
-
 
 impl Storage {
     fn new(archetype: Archetype) -> Self {
@@ -211,7 +213,6 @@ impl Storage {
             self.secondary_mapping.insert(self.mapping[idx], idx);
         }
 
-
         let removed_data = self
             .data
             .drain(idx * individual_size..(idx + 1) * individual_size)
@@ -237,7 +238,11 @@ impl Storage {
 pub trait Queryable<'a>: 'a {
     type Target;
     fn add(archetype: &mut Archetype);
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype);
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    );
     fn get(
         archetype: &Archetype,
         ptr: *mut u8,
@@ -249,7 +254,6 @@ pub trait Queryable<'a>: 'a {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Without<T>(PhantomData<T>);
-
 
 impl<'a, T: Component> Queryable<'a> for Without<T> {
     type Target = ();
@@ -293,7 +297,12 @@ impl<'a, T: Component> Queryable<'a> for Without<T> {
         }
     }
 
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {}
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
+    }
 
     fn get(
         archetype: &Archetype,
@@ -348,7 +357,11 @@ impl<'a, T: Queryable<'static>> Queryable<'a> for Option<T> {
         }
     }
 
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
         if let Some(x) = storage_archetype.translation(any::TypeId::of::<T::Target>()) {
             translations.push(x);
         }
@@ -361,12 +374,17 @@ impl<'a, T: Queryable<'static>> Queryable<'a> for Option<T> {
         translations: &[usize],
         idx: &mut usize,
     ) -> Self {
-        if archetype.info.iter().find(|info| {
-            let Some(info) = info else {
+        if archetype
+            .info
+            .iter()
+            .find(|info| {
+                let Some(info) = info else {
                 return false;
             };
-            info.ty == any::TypeId::of::<T::Target>()
-        }).is_some() {
+                info.ty == any::TypeId::of::<T::Target>()
+            })
+            .is_some()
+        {
             let c = Some(T::get(archetype, ptr, entity, translations, idx));
             c
         } else {
@@ -375,11 +393,18 @@ impl<'a, T: Queryable<'static>> Queryable<'a> for Option<T> {
     }
 }
 
-
 impl<'a, T: Component> Queryable<'a> for &'a T {
     type Target = T;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
-        translations.push(storage_archetype.translation(any::TypeId::of::<T>()).unwrap());
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
+        translations.push(
+            storage_archetype
+                .translation(any::TypeId::of::<T>())
+                .unwrap(),
+        );
     }
     fn add(archetype: &mut Archetype) {
         let mut trimmed_archetype = archetype
@@ -436,8 +461,16 @@ impl<'a, T: Component> Queryable<'a> for &'a T {
 
 impl<'a, T: Component> Queryable<'a> for &'a mut T {
     type Target = T;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
-        translations.push(storage_archetype.translation(any::TypeId::of::<T>()).unwrap());
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
+        translations.push(
+            storage_archetype
+                .translation(any::TypeId::of::<T>())
+                .unwrap(),
+        );
     }
     fn add(archetype: &mut Archetype) {
         let mut trimmed_archetype = archetype
@@ -484,7 +517,7 @@ impl<'a, T: Component> Queryable<'a> for &'a mut T {
         ptr: *mut u8,
         entity: *const Entity,
         translations: &[usize],
-        idx:  &mut usize,
+        idx: &mut usize,
     ) -> Self {
         let c = unsafe { (ptr.add(translations[*idx]) as *mut T).as_mut().unwrap() };
         *idx += 1;
@@ -494,7 +527,11 @@ impl<'a, T: Component> Queryable<'a> for &'a mut T {
 
 impl<'a> Queryable<'a> for Entity {
     type Target = Self;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
     }
     fn add(archetype: &mut Archetype) {}
 
@@ -503,7 +540,7 @@ impl<'a> Queryable<'a> for Entity {
         ptr: *mut u8,
         entity: *const Entity,
         translations: &[usize],
-        idx:  &mut usize,
+        idx: &mut usize,
     ) -> Self {
         unsafe { ptr::read(entity) }
     }
@@ -511,7 +548,11 @@ impl<'a> Queryable<'a> for Entity {
 
 impl<'a, A: Queryable<'a>, B: Queryable<'a>> Queryable<'a> for (A, B) {
     type Target = Self;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
         A::translations(translations, storage_archetype, query_archetype);
         B::translations(translations, storage_archetype, query_archetype);
     }
@@ -524,7 +565,7 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>> Queryable<'a> for (A, B) {
         ptr: *mut u8,
         entity: *const Entity,
         translations: &[usize],
-        idx:  &mut usize,
+        idx: &mut usize,
     ) -> Self {
         (
             A::get(archetype, ptr, entity, translations, idx),
@@ -535,7 +576,11 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>> Queryable<'a> for (A, B) {
 
 impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>> Queryable<'a> for (A, B, C) {
     type Target = Self;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
         A::translations(translations, storage_archetype, query_archetype);
         B::translations(translations, storage_archetype, query_archetype);
         C::translations(translations, storage_archetype, query_archetype);
@@ -550,7 +595,7 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>> Queryable<'a> for
         ptr: *mut u8,
         entity: *const Entity,
         translations: &[usize],
-        idx:  &mut usize,
+        idx: &mut usize,
     ) -> Self {
         (
             A::get(archetype, ptr, entity, translations, idx),
@@ -560,9 +605,15 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>> Queryable<'a> for
     }
 }
 
-impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>> Queryable<'a> for (A, B, C, D) {
+impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>> Queryable<'a>
+    for (A, B, C, D)
+{
     type Target = Self;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
         A::translations(translations, storage_archetype, query_archetype);
         B::translations(translations, storage_archetype, query_archetype);
         C::translations(translations, storage_archetype, query_archetype);
@@ -589,9 +640,21 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>>
         )
     }
 }
-impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>, E: Queryable<'a>> Queryable<'a> for (A, B, C, D, E) {
+impl<
+        'a,
+        A: Queryable<'a>,
+        B: Queryable<'a>,
+        C: Queryable<'a>,
+        D: Queryable<'a>,
+        E: Queryable<'a>,
+    > Queryable<'a> for (A, B, C, D, E)
+{
     type Target = Self;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
         A::translations(translations, storage_archetype, query_archetype);
         B::translations(translations, storage_archetype, query_archetype);
         C::translations(translations, storage_archetype, query_archetype);
@@ -621,9 +684,22 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>,
         )
     }
 }
-impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>, E: Queryable<'a>, F: Queryable<'a>> Queryable<'a> for (A, B, C, D, E, F) {
+impl<
+        'a,
+        A: Queryable<'a>,
+        B: Queryable<'a>,
+        C: Queryable<'a>,
+        D: Queryable<'a>,
+        E: Queryable<'a>,
+        F: Queryable<'a>,
+    > Queryable<'a> for (A, B, C, D, E, F)
+{
     type Target = Self;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
         A::translations(translations, storage_archetype, query_archetype);
         B::translations(translations, storage_archetype, query_archetype);
         C::translations(translations, storage_archetype, query_archetype);
@@ -656,9 +732,23 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>,
         )
     }
 }
-impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>, E: Queryable<'a>, F: Queryable<'a>, G: Queryable<'a>> Queryable<'a> for (A, B, C, D, E, F, G) {
+impl<
+        'a,
+        A: Queryable<'a>,
+        B: Queryable<'a>,
+        C: Queryable<'a>,
+        D: Queryable<'a>,
+        E: Queryable<'a>,
+        F: Queryable<'a>,
+        G: Queryable<'a>,
+    > Queryable<'a> for (A, B, C, D, E, F, G)
+{
     type Target = Self;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
         A::translations(translations, storage_archetype, query_archetype);
         B::translations(translations, storage_archetype, query_archetype);
         C::translations(translations, storage_archetype, query_archetype);
@@ -694,9 +784,24 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>,
         )
     }
 }
-impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>, E: Queryable<'a>, F: Queryable<'a>, G: Queryable<'a>, H: Queryable<'a>> Queryable<'a> for (A, B, C, D, E, F, G, H) {
+impl<
+        'a,
+        A: Queryable<'a>,
+        B: Queryable<'a>,
+        C: Queryable<'a>,
+        D: Queryable<'a>,
+        E: Queryable<'a>,
+        F: Queryable<'a>,
+        G: Queryable<'a>,
+        H: Queryable<'a>,
+    > Queryable<'a> for (A, B, C, D, E, F, G, H)
+{
     type Target = Self;
-    fn translations(translations: &mut Vec<usize>, storage_archetype: &Archetype, query_archetype: &Archetype) {
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
         A::translations(translations, storage_archetype, query_archetype);
         B::translations(translations, storage_archetype, query_archetype);
         C::translations(translations, storage_archetype, query_archetype);
@@ -744,7 +849,6 @@ pub struct Query<'a, Q: Queryable<'a> + ?Sized> {
 
 unsafe impl<'a, Q: Queryable<'a>> Send for Query<'a, Q> {}
 unsafe impl<'a, Q: Queryable<'a>> Sync for Query<'a, Q> {}
-
 
 pub trait QueryExt<'a>: Queryable<'a> {
     fn query(registry: &mut Registry) -> Query<'a, Self>;
@@ -818,7 +922,6 @@ impl<'a, Q: Queryable<'a>> Iterator for Query<'a, Q> {
     }
 }
 
-
 #[derive(Default)]
 pub struct Registry {
     entities: Entities,
@@ -846,8 +949,8 @@ impl Registry {
     }
     pub fn create<T: Resource>(&mut self, resource: T) {
         let bytes =
-        unsafe { slice::from_raw_parts(&resource as *const _ as *const u8, resource.size()) }
-            .to_vec();
+            unsafe { slice::from_raw_parts(&resource as *const _ as *const u8, resource.size()) }
+                .to_vec();
 
         self.resources.insert(resource.id(), bytes);
 
@@ -859,17 +962,37 @@ impl Registry {
         };
 
         unsafe { Some((bytes.as_ptr() as *const T).as_ref().unwrap()) }
-    }   
-    
+    }
+
     pub fn resource_mut<'a, 'b, T: Resource>(&'a mut self) -> Option<&'b mut T> {
-        
         let Some(bytes) = self.resources.get_mut(&any::TypeId::of::<T>()) else {
             None?
         };
 
         unsafe { Some((bytes.as_mut_ptr() as *mut T).as_mut().unwrap()) }
     }
-    
+
+    pub fn destroy<T: Resource>(&mut self) -> Option<T> {
+        let Some(bytes) = self.resources.remove(&any::TypeId::of::<T>()) else {
+            None?
+        };
+
+        Some(unsafe { (bytes.as_ptr() as *const _ as *const T).read() })
+    }
+
+    pub fn remove_all<T: Component, F: Fn(&mut Self, Entity) -> bool>(&mut self, predicate: F) {
+        let mut remove_entities = HashSet::new();
+        for (entity, _) in <(Entity, &T)>::query(self) {
+            if !(predicate)(self, entity) {
+                continue;
+            }
+            remove_entities.insert(entity);
+        }
+        for entity in remove_entities {
+            self.remove::<T>(entity);
+        }
+    }
+
     pub fn insert<T: Component>(&mut self, entity: Entity, component: T) {
         let Some(mut archetype) = self.mapping.remove(&entity) else {
             return;
@@ -932,10 +1055,8 @@ impl Registry {
         let size_up_to = archetype.size_up_to(idx);
 
         data.splice(size_up_to..size_up_to, bytes);
-        
-        table.insert(idx, Box::new(component));
 
-       
+        table.insert(idx, Box::new(component));
 
         self.storage
             .entry(archetype.clone())
@@ -1015,7 +1136,7 @@ impl Registry {
         }
 
         let storage = self.storage.get(&archetype).unwrap();
-        
+
         let Some(index) = storage.secondary_mapping.get(&entity).cloned() else {
             None?
         };
@@ -1039,7 +1160,7 @@ impl Registry {
         }
 
         let storage = self.storage.get_mut(&archetype).unwrap();
-        
+
         let Some(index) = storage.secondary_mapping.get(&entity).cloned() else {
             None?
         };
@@ -1049,7 +1170,10 @@ impl Registry {
             None?
         };
         unsafe {
-            let ptr = storage.data.as_mut_ptr().add(total_size * index + translation);
+            let ptr = storage
+                .data
+                .as_mut_ptr()
+                .add(total_size * index + translation);
             Some((ptr as *mut T).as_mut().unwrap())
         }
     }
@@ -1061,8 +1185,13 @@ impl Registry {
             return;
         };
         println!("archetype len: {}", archetype.len);
-        for (i, name) in archetype.info
-        .iter().filter_map(|x| *x).map(|x| x.name).enumerate() {
+        for (i, name) in archetype
+            .info
+            .iter()
+            .filter_map(|x| *x)
+            .map(|x| x.name)
+            .enumerate()
+        {
             println!("component {}: {}", i, name);
         }
         std::io::stdout().flush().unwrap();

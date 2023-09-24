@@ -2,7 +2,7 @@ use std::time;
 
 use hashbrown::HashMap;
 
-use crate::{Registry, Entity, Without};
+use crate::{Entity, Registry, Without};
 
 pub struct DropTest {
     s: u32,
@@ -49,7 +49,7 @@ fn it_works2() {
         if i % 5 == 0 {
             registry.insert(e, "Hello, e!".to_owned() + &i.to_string());
         }
-        registry.insert(e, Tuple([i, i+5, i+27]));
+        registry.insert(e, Tuple([i, i + 5, i + 27]));
         if i % 10 == 0 {
             registry.insert(e, i);
         }
@@ -67,8 +67,9 @@ fn it_works2() {
         last = now;
     }
 
-    
-    for (entity, _,  Tuple([i1, i2, i3]), string) in <(Entity, Without<usize>, &Tuple, Option<&String>,)>::query(&mut registry){
+    for (entity, _, Tuple([i1, i2, i3]), string) in
+        <(Entity, Without<usize>, &Tuple, Option<&String>)>::query(&mut registry)
+    {
         if let Some(s) = string {
             dbg!(s);
         } else {
@@ -91,13 +92,15 @@ fn it_works2() {
         if i % 5 == 0 {
             registry.insert(e, "Hello, e!".to_owned() + &i.to_string());
         }
-        registry.insert(e, Tuple([i, i+5, i+27]));
+        registry.insert(e, Tuple([i, i + 5, i + 27]));
         if i % 10 == 0 {
             registry.insert(e, i);
         }
         mapping.insert(e, i);
     }
-    for (entity, _,  Tuple([i1, i2, i3]), string) in <(Entity, Without<usize>, &Tuple, Option<&String>,)>::query(&mut registry){
+    for (entity, _, Tuple([i1, i2, i3]), string) in
+        <(Entity, Without<usize>, &Tuple, Option<&String>)>::query(&mut registry)
+    {
         if let Some(s) = string {
             dbg!(s);
         } else {
@@ -107,7 +110,7 @@ fn it_works2() {
         assert_eq!(*i2, mapping.get(&entity).unwrap() + 5);
         assert_eq!(*i3, mapping.get(&entity).unwrap() + 27);
     }
-    
+
     let mut avg = timing.iter().cloned().fold(0, |sum, x| sum + x) as f64 / timing.len() as f64;
 
     dbg!(avg); //534 nanoseconds

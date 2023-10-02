@@ -1,10 +1,15 @@
+#![feature(fn_traits)]
+
 use core::{arch, slice};
 use std::{
     any::{self, TypeId},
+    collections::BTreeMap,
     marker::PhantomData,
     mem::{self, ManuallyDrop},
-    ptr,
+    ops, ptr,
     sync::Arc,
+    thread::{self, JoinHandle},
+    time::Duration,
 };
 
 mod tests;
@@ -13,6 +18,7 @@ pub mod prelude {
     pub use crate::*;
 }
 
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use hashbrown::{HashMap, HashSet};
 
 pub trait Component: 'static + Send + Sync {
@@ -235,7 +241,7 @@ impl Storage {
     }
 }
 
-pub trait Queryable<'a>: 'a {
+pub trait Queryable {
     type Target;
     fn add(archetype: &mut Archetype);
     fn translations(
@@ -250,12 +256,36 @@ pub trait Queryable<'a>: 'a {
         translations: &[usize],
         idx: &mut usize,
     ) -> Self;
+    fn refs(deps: &mut HashSet<TypeId>) {}
+    fn muts(deps: &mut HashSet<TypeId>) {}
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Without<T>(PhantomData<T>);
 
-impl<'a, T: Component> Queryable<'a> for Without<T> {
+impl Queryable for () {
+    type Target = Self;
+
+    fn add(archetype: &mut Archetype) {}
+
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
+    }
+
+    fn get(
+        archetype: &Archetype,
+        ptr: *mut u8,
+        entity: *const Entity,
+        translations: &[usize],
+        idx: &mut usize,
+    ) -> Self {
+    }
+}
+
+impl<'a, T: Component> Queryable for Without<T> {
     type Target = ();
     fn add(archetype: &mut Archetype) {
         let mut trimmed_archetype = archetype
@@ -315,7 +345,7 @@ impl<'a, T: Component> Queryable<'a> for Without<T> {
     }
 }
 
-impl<'a, T: Queryable<'static>> Queryable<'a> for Option<T> {
+impl<'a, T: Queryable + 'static> Queryable for Option<T> {
     type Target = Self;
     fn add(archetype: &mut Archetype) {
         let mut trimmed_archetype = archetype
@@ -391,9 +421,17 @@ impl<'a, T: Queryable<'static>> Queryable<'a> for Option<T> {
             None
         }
     }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        T::refs(deps);
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        T::muts(deps);
+    }
 }
 
-impl<'a, T: Component> Queryable<'a> for &'a T {
+impl<'a, T: Component> Queryable for &'a T {
     type Target = T;
     fn translations(
         translations: &mut Vec<usize>,
@@ -457,9 +495,13 @@ impl<'a, T: Component> Queryable<'a> for &'a T {
         *idx += 1;
         c
     }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        deps.insert(any::TypeId::of::<T>());
+    }
 }
 
-impl<'a, T: Component> Queryable<'a> for &'a mut T {
+impl<'a, T: Component> Queryable for &'a mut T {
     type Target = T;
     fn translations(
         translations: &mut Vec<usize>,
@@ -523,9 +565,17 @@ impl<'a, T: Component> Queryable<'a> for &'a mut T {
         *idx += 1;
         c
     }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        deps.insert(any::TypeId::of::<T>());
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        deps.insert(any::TypeId::of::<T>());
+    }
 }
 
-impl<'a> Queryable<'a> for Entity {
+impl Queryable for Entity {
     type Target = Self;
     fn translations(
         translations: &mut Vec<usize>,
@@ -546,7 +596,7 @@ impl<'a> Queryable<'a> for Entity {
     }
 }
 
-impl<'a, A: Queryable<'a>, B: Queryable<'a>> Queryable<'a> for (A, B) {
+impl<'a, A: Queryable, B: Queryable> Queryable for (A, B) {
     type Target = Self;
     fn translations(
         translations: &mut Vec<usize>,
@@ -572,9 +622,19 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>> Queryable<'a> for (A, B) {
             B::get(archetype, ptr, entity, translations, idx),
         )
     }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        A::refs(deps);
+        B::refs(deps);
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        A::muts(deps);
+        B::muts(deps);
+    }
 }
 
-impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>> Queryable<'a> for (A, B, C) {
+impl<'a, A: Queryable, B: Queryable, C: Queryable> Queryable for (A, B, C) {
     type Target = Self;
     fn translations(
         translations: &mut Vec<usize>,
@@ -603,11 +663,21 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>> Queryable<'a> for
             C::get(archetype, ptr, entity, translations, idx),
         )
     }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        A::refs(deps);
+        B::refs(deps);
+        C::refs(deps);
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        A::muts(deps);
+        B::muts(deps);
+        C::muts(deps);
+    }
 }
 
-impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>> Queryable<'a>
-    for (A, B, C, D)
-{
+impl<'a, A: Queryable, B: Queryable, C: Queryable, D: Queryable> Queryable for (A, B, C, D) {
     type Target = Self;
     fn translations(
         translations: &mut Vec<usize>,
@@ -639,15 +709,23 @@ impl<'a, A: Queryable<'a>, B: Queryable<'a>, C: Queryable<'a>, D: Queryable<'a>>
             D::get(archetype, ptr, entity, translations, idx),
         )
     }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        A::refs(deps);
+        B::refs(deps);
+        C::refs(deps);
+        D::refs(deps);
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        A::muts(deps);
+        B::muts(deps);
+        C::muts(deps);
+        D::muts(deps);
+    }
 }
-impl<
-        'a,
-        A: Queryable<'a>,
-        B: Queryable<'a>,
-        C: Queryable<'a>,
-        D: Queryable<'a>,
-        E: Queryable<'a>,
-    > Queryable<'a> for (A, B, C, D, E)
+impl<'a, A: Queryable, B: Queryable, C: Queryable, D: Queryable, E: Queryable> Queryable
+    for (A, B, C, D, E)
 {
     type Target = Self;
     fn translations(
@@ -683,16 +761,25 @@ impl<
             E::get(archetype, ptr, entity, translations, idx),
         )
     }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        A::refs(deps);
+        B::refs(deps);
+        C::refs(deps);
+        D::refs(deps);
+        E::refs(deps);
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        A::muts(deps);
+        B::muts(deps);
+        C::muts(deps);
+        D::muts(deps);
+        E::muts(deps);
+    }
 }
-impl<
-        'a,
-        A: Queryable<'a>,
-        B: Queryable<'a>,
-        C: Queryable<'a>,
-        D: Queryable<'a>,
-        E: Queryable<'a>,
-        F: Queryable<'a>,
-    > Queryable<'a> for (A, B, C, D, E, F)
+impl<'a, A: Queryable, B: Queryable, C: Queryable, D: Queryable, E: Queryable, F: Queryable>
+    Queryable for (A, B, C, D, E, F)
 {
     type Target = Self;
     fn translations(
@@ -731,17 +818,34 @@ impl<
             F::get(archetype, ptr, entity, translations, idx),
         )
     }
+    fn refs(deps: &mut HashSet<TypeId>) {
+        A::refs(deps);
+        B::refs(deps);
+        C::refs(deps);
+        D::refs(deps);
+        E::refs(deps);
+        F::refs(deps);
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        A::muts(deps);
+        B::muts(deps);
+        C::muts(deps);
+        D::muts(deps);
+        E::muts(deps);
+        F::muts(deps);
+    }
 }
 impl<
         'a,
-        A: Queryable<'a>,
-        B: Queryable<'a>,
-        C: Queryable<'a>,
-        D: Queryable<'a>,
-        E: Queryable<'a>,
-        F: Queryable<'a>,
-        G: Queryable<'a>,
-    > Queryable<'a> for (A, B, C, D, E, F, G)
+        A: Queryable,
+        B: Queryable,
+        C: Queryable,
+        D: Queryable,
+        E: Queryable,
+        F: Queryable,
+        G: Queryable,
+    > Queryable for (A, B, C, D, E, F, G)
 {
     type Target = Self;
     fn translations(
@@ -783,18 +887,37 @@ impl<
             G::get(archetype, ptr, entity, translations, idx),
         )
     }
+    fn refs(deps: &mut HashSet<TypeId>) {
+        A::refs(deps);
+        B::refs(deps);
+        C::refs(deps);
+        D::refs(deps);
+        E::refs(deps);
+        F::refs(deps);
+        G::refs(deps);
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        A::muts(deps);
+        B::muts(deps);
+        C::muts(deps);
+        D::muts(deps);
+        E::muts(deps);
+        F::muts(deps);
+        G::muts(deps);
+    }
 }
 impl<
         'a,
-        A: Queryable<'a>,
-        B: Queryable<'a>,
-        C: Queryable<'a>,
-        D: Queryable<'a>,
-        E: Queryable<'a>,
-        F: Queryable<'a>,
-        G: Queryable<'a>,
-        H: Queryable<'a>,
-    > Queryable<'a> for (A, B, C, D, E, F, G, H)
+        A: Queryable,
+        B: Queryable,
+        C: Queryable,
+        D: Queryable,
+        E: Queryable,
+        F: Queryable,
+        G: Queryable,
+        H: Queryable,
+    > Queryable for (A, B, C, D, E, F, G, H)
 {
     type Target = Self;
     fn translations(
@@ -839,23 +962,44 @@ impl<
             H::get(archetype, ptr, entity, translations, idx),
         )
     }
+    fn refs(deps: &mut HashSet<TypeId>) {
+        A::refs(deps);
+        B::refs(deps);
+        C::refs(deps);
+        D::refs(deps);
+        E::refs(deps);
+        F::refs(deps);
+        G::refs(deps);
+        H::refs(deps);
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        A::muts(deps);
+        B::muts(deps);
+        C::muts(deps);
+        D::muts(deps);
+        E::muts(deps);
+        F::muts(deps);
+        G::muts(deps);
+        H::muts(deps);
+    }
 }
-pub struct Query<'a, Q: Queryable<'a> + ?Sized> {
+pub struct Query<'a, Q: Queryable + ?Sized> {
     mapping: Vec<(Archetype, usize, usize, Vec<usize>, *mut u8, *const Entity)>,
     inner: usize,
     outer: usize,
     marker: PhantomData<&'a Q>,
 }
 
-unsafe impl<'a, Q: Queryable<'a>> Send for Query<'a, Q> {}
-unsafe impl<'a, Q: Queryable<'a>> Sync for Query<'a, Q> {}
+unsafe impl<'a, Q: Queryable> Send for Query<'a, Q> {}
+unsafe impl<'a, Q: Queryable> Sync for Query<'a, Q> {}
 
-pub trait QueryExt<'a>: Queryable<'a> {
-    fn query(registry: &mut Registry) -> Query<'a, Self>;
+pub trait QueryExt: Queryable {
+    fn query(registry: &mut Registry) -> Query<Self>;
 }
 
-impl<'a, T: Queryable<'a>> QueryExt<'a> for T {
-    fn query(registry: &mut Registry) -> Query<'a, Self> {
+impl<'a, T: Queryable> QueryExt for T {
+    fn query(registry: &mut Registry) -> Query<Self> {
         let mut query_archetype = Default::default();
 
         T::add(&mut query_archetype);
@@ -894,7 +1038,7 @@ impl<'a, T: Queryable<'a>> QueryExt<'a> for T {
     }
 }
 
-impl<'a, Q: Queryable<'a>> Iterator for Query<'a, Q> {
+impl<'a, Q: Queryable> Iterator for Query<'a, Q> {
     type Item = Q;
     fn next(&mut self) -> Option<Self::Item> {
         if self.mapping.len() == 0 {
@@ -919,6 +1063,246 @@ impl<'a, Q: Queryable<'a>> Iterator for Query<'a, Q> {
         self.inner += 1;
 
         Some(Q::get(archetype, ptr, entity, translations, &mut 0))
+    }
+}
+
+pub trait System<T> {
+    type Param: Queryable;
+    fn execute(&self, registry: *mut Registry, param: Self::Param);
+    fn ref_deps(&self) -> HashSet<TypeId>;
+    fn mut_deps(&self) -> HashSet<TypeId>;
+}
+
+pub struct WrapperSystem<'a, T: Queryable> {
+    sub_system: Box<dyn System<T, Param = T>>,
+    marker: PhantomData<&'a T>,
+}
+
+pub struct SubSystem<T: Queryable + Send>(*mut Registry, *const dyn System<T, Param = T>);
+
+impl<T: Queryable + Send> Clone for SubSystem<T> {
+    fn clone(&self) -> Self {
+        Self(self.0, self.1)
+    }
+}
+
+unsafe impl<T: Queryable + Send> Send for SubSystem<T> {}
+unsafe impl<T: Queryable + Send> Sync for SubSystem<T> {}
+
+impl<'a, A: Queryable + Send> System<()> for WrapperSystem<'a, A> {
+    type Param = ();
+    fn execute(&self, registry: *mut Registry, _: Self::Param) {
+        use rayon::iter::*;
+        let sub_system = SubSystem::<A>(registry, &*self.sub_system as *const _);
+        A::query(unsafe { registry.as_mut().unwrap() })
+            .into_iter()
+            .par_bridge()
+            .for_each(|param| {
+                let SubSystem(registry, sub_system) = sub_system.clone();
+                unsafe { sub_system.as_ref().unwrap().execute(registry, param) };
+            });
+    }
+    fn ref_deps(&self) -> HashSet<TypeId> {
+        let mut deps = Default::default();
+        A::refs(&mut deps);
+        deps
+    }
+    fn mut_deps(&self) -> HashSet<TypeId> {
+        let mut deps = Default::default();
+        A::muts(&mut deps);
+        deps
+    }
+}
+
+impl<A: Queryable, Function: Fn(A)> System<(A,)> for Function {
+    type Param = A;
+    fn execute(&self, _: *mut Registry, a: Self::Param) {
+        self.call((a,))
+    }
+
+    fn ref_deps(&self) -> HashSet<TypeId> {
+        unreachable!()
+    }
+
+    fn mut_deps(&self) -> HashSet<TypeId> {
+        unreachable!()
+    }
+}
+
+impl<A: Queryable, B: Queryable, Function: Fn(A, B)> System<(A, B)> for Function {
+    type Param = (A, B);
+    fn execute(&self, _: *mut Registry, (a, b): Self::Param) {
+        self.call((a, b))
+    }
+
+    fn ref_deps(&self) -> HashSet<TypeId> {
+        unreachable!()
+    }
+
+    fn mut_deps(&self) -> HashSet<TypeId> {
+        unreachable!()
+    }
+}
+
+impl<'a, A: Queryable, B: Queryable, C: Queryable, Function: Fn(A, B, C)> System<(A, B, C)>
+    for Function
+{
+    type Param = (A, B, C);
+    fn execute(&self, _: *mut Registry, (a, b, c): Self::Param) {
+        self.call((a, b, c))
+    }
+
+    fn ref_deps(&self) -> HashSet<TypeId> {
+        unreachable!()
+    }
+
+    fn mut_deps(&self) -> HashSet<TypeId> {
+        unreachable!()
+    }
+}
+
+impl<A: Queryable, B: Queryable, C: Queryable, D: Queryable, Function: Fn(A, B, C, D)>
+    System<(A, B, C, D)> for Function
+{
+    type Param = (A, B, C, D);
+    fn execute(&self, _: *mut Registry, (a, b, c, d): Self::Param) {
+        self.call((a, b, c, d))
+    }
+
+    fn ref_deps(&self) -> HashSet<TypeId> {
+        unreachable!()
+    }
+
+    fn mut_deps(&self) -> HashSet<TypeId> {
+        unreachable!()
+    }
+}
+
+pub type NodeId = usize;
+pub type Node = Box<dyn System<(), Param = ()>>;
+#[derive(Default)]
+pub struct Graph {
+    nodes: Vec<Node>,
+    dependencies: HashMap<NodeId, HashSet<NodeId>>,
+}
+
+impl Graph {
+    fn add(&mut self, node: Node) {
+        let my_id = self.nodes.len();
+
+        self.nodes.push(node);
+
+        let me = &self.nodes[my_id];
+
+        let my_refs = me.ref_deps();
+        let my_muts = me.mut_deps();
+
+        let mut dependencies = HashSet::new();
+
+        for (their_id, them) in self.nodes[..my_id].iter().enumerate().rev() {
+            let their_refs = them.ref_deps();
+            let their_muts = them.mut_deps();
+
+            for my_ref in &my_refs {
+                if their_muts.contains(my_ref) {
+                    dependencies.insert(their_id);
+                }
+            }
+
+            for my_mut in &my_muts {
+                if their_refs.contains(my_mut) || their_muts.contains(my_mut) {
+                    dependencies.insert(their_id);
+                }
+            }
+        }
+
+        self.dependencies.insert(my_id, dependencies);
+    }
+}
+
+pub struct Scheduler {
+    workers: Vec<JoinHandle<()>>,
+    graph: Graph,
+    work_tx: Sender<WorkUnit>,
+    done_rx: Receiver<NodeId>,
+}
+
+pub struct WorkUnit(NodeId, *mut Registry, *mut dyn System<(), Param = ()>);
+
+unsafe impl Send for WorkUnit {}
+
+impl Scheduler {
+    pub fn new(workers: usize) -> Self {
+        let (work_tx, work_rx) = unbounded::<WorkUnit>();
+        let (done_tx, done_rx) = unbounded::<NodeId>();
+        let workers = (0..workers)
+            .into_iter()
+            .map(|i| {
+                let work_rx = work_rx.clone();
+                let done_tx = done_tx.clone();
+
+                thread::Builder::new()
+                    .name(format!("Worker {i}"))
+                    .spawn(move || loop {
+                        let Ok(WorkUnit(id, registry, system)) = work_rx.try_recv() else {
+                        thread::sleep(Duration::from_nanos(1));
+                        continue;
+                    };
+
+                        unsafe {
+                            system.as_ref().unwrap().execute(registry, ());
+                        }
+
+                        done_tx
+                            .send(id)
+                            .expect("failed to signal work unit as done");
+                    })
+                    .expect("failed to start worker")
+            })
+            .collect::<Vec<_>>();
+
+        Self {
+            workers,
+            graph: Default::default(),
+            work_tx,
+            done_rx,
+        }
+    }
+    fn add<A: Queryable + 'static + Send, T: System<A, Param = A> + 'static>(&mut self, system: T) {
+        let sub_system = Box::new(system);
+        let wrapper_system = Box::new(WrapperSystem {
+            sub_system,
+            marker: PhantomData,
+        });
+        self.graph.add(wrapper_system);
+    }
+    fn execute(&self, registry: &mut Registry) {
+        let mut executing = Vec::new();
+
+        let mut nodes_iter = self.graph.nodes.iter().enumerate();
+        loop {
+            let Some((id, node)) = nodes_iter.next() else {
+                break;
+            };
+
+            while 'a: loop {
+                for id in &executing {
+                    if self.graph.dependencies[id].contains(id) {
+                        break 'a true;
+                    }
+                }
+                break 'a false;
+            } {
+                while let Ok(id) = self.done_rx.try_recv() {
+                    executing.remove(id);
+                }
+            }
+
+            executing.push(id);
+            self.work_tx
+                .try_send(WorkUnit(id, registry, (&**node) as *const _ as *mut _))
+                .expect("failed to send work unit");
+        }
     }
 }
 
@@ -982,7 +1366,10 @@ impl Registry {
 
     pub fn remove_all<T: Component, F: Fn(&mut Self, Entity) -> bool>(&mut self, predicate: F) {
         let mut remove_entities = HashSet::new();
-        for (entity, _) in <(Entity, &T)>::query(self) {
+        for entity in <(Entity, &T)>::query(self)
+            .map(|(e, _)| e)
+            .collect::<Vec<_>>()
+        {
             if !(predicate)(self, entity) {
                 continue;
             }

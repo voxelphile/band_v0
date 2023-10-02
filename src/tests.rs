@@ -1,19 +1,23 @@
-use std::time;
+use std::{
+    io::{self, Write},
+    time,
+};
 
 use hashbrown::HashMap;
 
-use crate::{Entity, Registry, Without};
+use crate::*;
 
+#[derive(Debug)]
 pub struct DropTest {
     s: u32,
 }
 
 impl Drop for DropTest {
     fn drop(&mut self) {
-        println!("drop test success!");
     }
 }
 
+#[derive(Debug)]
 pub struct Tuple([usize; 3]);
 
 //#[test]
@@ -114,4 +118,53 @@ fn it_works2() {
     let mut avg = timing.iter().cloned().fold(0, |sum, x| sum + x) as f64 / timing.len() as f64;
 
     dbg!(avg); //534 nanoseconds
+}
+fn first_system(e: Entity, d: &DropTest, t: &Tuple) {
+    thread::sleep(Duration::from_millis(2));
+}
+fn second_system(e: Entity, d: &mut DropTest, t: &Tuple) {
+    thread::sleep(Duration::from_millis(2));
+}
+fn third_system(e: Entity, d: &DropTest, t: &mut Tuple) {
+    thread::sleep(Duration::from_millis(2));
+}
+fn forth_system(e: Entity, d: &mut DropTest, t: &mut Tuple) {
+    thread::sleep(Duration::from_millis(2));
+}
+fn fifth_system(e: Entity, d: &DropTest, t: &Tuple) {
+    thread::sleep(Duration::from_micros(2));
+}
+fn sixth_system(e: Entity, d: &DropTest, t: &Tuple) {
+    thread::sleep(Duration::from_micros(2));
+}
+fn seventh_system(e: Entity, d: &mut DropTest, t: &mut Tuple) {
+    thread::sleep(Duration::from_micros(2));
+}
+#[test]
+fn graph_works() {
+    let mut registry = Registry::default();
+    for i in 0..1000usize {
+        let e = registry.spawn();
+        if i % 2 == 0 {
+            registry.insert(e, DropTest { s: i as u32 });
+        }
+        if i % 5 == 0 {
+            registry.insert(e, "Hello, e!".to_owned() + &i.to_string());
+        }
+        registry.insert(e, Tuple([i, i + 5, i + 27]));
+        if i % 10 == 0 {
+            registry.insert(e, i);
+        }
+    }
+    let i = std::time::Instant::now();
+    let mut scheduler = Scheduler::new(8);
+    scheduler.add(first_system);
+    scheduler.add(second_system);
+    scheduler.add(third_system);
+    scheduler.add(forth_system);
+    scheduler.add(fifth_system);
+    scheduler.add(sixth_system);
+    scheduler.add(seventh_system);
+    scheduler.execute(&mut registry);
+    dbg!(std::time::Instant::now().duration_since(i));
 }

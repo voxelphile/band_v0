@@ -13,8 +13,7 @@ pub struct DropTest {
 }
 
 impl Drop for DropTest {
-    fn drop(&mut self) {
-    }
+    fn drop(&mut self) {}
 }
 
 #[derive(Debug)]
@@ -132,13 +131,13 @@ fn forth_system(e: Entity, d: &mut DropTest, t: &mut Tuple) {
     thread::sleep(Duration::from_millis(2));
 }
 fn fifth_system(e: Entity, d: &DropTest, t: &Tuple) {
-    thread::sleep(Duration::from_micros(2));
+    thread::sleep(Duration::from_millis(2));
 }
 fn sixth_system(e: Entity, d: &DropTest, t: &Tuple) {
-    thread::sleep(Duration::from_micros(2));
+    thread::sleep(Duration::from_millis(2));
 }
 fn seventh_system(e: Entity, d: &mut DropTest, t: &mut Tuple) {
-    thread::sleep(Duration::from_micros(2));
+    thread::sleep(Duration::from_millis(2));
 }
 #[test]
 fn graph_works() {
@@ -166,5 +165,29 @@ fn graph_works() {
     scheduler.add(sixth_system);
     scheduler.add(seventh_system);
     scheduler.execute(&mut registry);
+    dbg!(std::time::Instant::now().duration_since(i));
+    dbg!("vs");
+    let i = std::time::Instant::now();
+    for (e, d, t) in <(Entity, &DropTest, &Tuple)>::query(&mut registry) {
+        thread::sleep(Duration::from_millis(2));
+    }
+    for (e, d, t) in <(Entity, &mut DropTest, &Tuple)>::query(&mut registry) {
+        thread::sleep(Duration::from_millis(2));
+    }
+    for (e, d, t) in <(Entity, &DropTest, &mut Tuple)>::query(&mut registry) {
+        thread::sleep(Duration::from_millis(2));
+    }
+    for (e, d, t) in <(Entity, &mut DropTest, &mut Tuple)>::query(&mut registry) {
+        thread::sleep(Duration::from_millis(2));
+    }
+    for (e, d, t) in <(Entity, &DropTest, &Tuple)>::query(&mut registry) {
+        thread::sleep(Duration::from_millis(2));
+    }
+    for (e, d, t) in <(Entity, &DropTest, &Tuple)>::query(&mut registry) {
+        thread::sleep(Duration::from_millis(2));
+    }
+    for (e, d, t) in <(Entity, &mut DropTest, &mut Tuple)>::query(&mut registry) {
+        thread::sleep(Duration::from_millis(2));
+    }
     dbg!(std::time::Instant::now().duration_since(i));
 }

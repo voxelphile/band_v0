@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 use std::future::Future;
+use std::ops::Mul;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 
@@ -103,9 +104,10 @@ impl Entities {
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 pub enum ArchetypeState {
-    Type,
+    Component,
     Optional,
     Without,
+    Resource,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
@@ -157,7 +159,7 @@ impl Archetype {
                 if info.state == ArchetypeState::Without {
                     !ids.contains(&info.ty)
                 } else {
-                    ids.contains(&info.ty) || matches!(info.state, ArchetypeState::Optional)
+                    ids.contains(&info.ty) || !matches!(info.state, ArchetypeState::Component)
                 }
             })
     }
@@ -245,7 +247,7 @@ impl Storage {
     }
 }
 
-pub trait Queryable {
+pub trait Queryable<T> {
     type Target;
     fn add(archetype: &mut Archetype);
     fn translations(
@@ -289,7 +291,14 @@ impl Queryable for () {
     }
 }
 
-impl<'a, T: Component> Queryable for Without<T> {
+pub struct ComponentMarker;
+pub struct EntityMarker;
+pub struct ResourceMarker;
+pub struct MultiMarker;
+pub struct OptionalMarker;
+pub struct WithoutMarker;
+
+impl<'a, T: Component> Queryable<ComponentMarker> for Without<T> {
     type Target = ();
     fn add(archetype: &mut Archetype) {
         let mut trimmed_archetype = archetype
@@ -349,7 +358,7 @@ impl<'a, T: Component> Queryable for Without<T> {
     }
 }
 
-impl<'a, T: Queryable + 'static> Queryable for Option<T> {
+impl<'a, A, T: Queryable<A> + 'static> Queryable<OptionalMarker> for Option<T> {
     type Target = Self;
     fn add(archetype: &mut Archetype) {
         let mut trimmed_archetype = archetype
@@ -435,7 +444,7 @@ impl<'a, T: Queryable + 'static> Queryable for Option<T> {
     }
 }
 
-impl<'a, T: Component> Queryable for &'a T {
+impl<'a, T: Component> Queryable<ComponentMarker> for &'a T {
     type Target = T;
     fn translations(
         translations: &mut Vec<usize>,
@@ -478,7 +487,7 @@ impl<'a, T: Component> Queryable for &'a T {
                 ty: any::TypeId::of::<T>(),
                 size: mem::size_of::<T>(),
                 name: any::type_name::<T>(),
-                state: ArchetypeState::Type,
+                state: ArchetypeState::Component,
             },
         );
 
@@ -505,7 +514,7 @@ impl<'a, T: Component> Queryable for &'a T {
     }
 }
 
-impl<'a, T: Component> Queryable for &'a mut T {
+impl<'a, T: Component> Queryable<ComponentMarker> for &'a mut T {
     type Target = T;
     fn translations(
         translations: &mut Vec<usize>,
@@ -548,7 +557,7 @@ impl<'a, T: Component> Queryable for &'a mut T {
                 ty: any::TypeId::of::<T>(),
                 size: mem::size_of::<T>(),
                 name: any::type_name::<T>(),
-                state: ArchetypeState::Type,
+                state: ArchetypeState::Component,
             },
         );
 
@@ -579,7 +588,77 @@ impl<'a, T: Component> Queryable for &'a mut T {
     }
 }
 
-impl Queryable for Entity {
+impl<'a, T: Resource> Queryable<ResourceMarker> for &'a T {
+    type Target = T;
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
+        translations.push(
+            storage_archetype
+                .translation(any::TypeId::of::<T>())
+                .unwrap(),
+        );
+    }
+    fn add(archetype: &mut Archetype) {
+        let mut trimmed_archetype = archetype
+            .info
+            .iter()
+            .cloned()
+            .map(Option::unwrap)
+            .map(|x| x)
+            .take(archetype.len)
+            .collect::<Vec<_>>();
+
+        let mut trimmed_type_ids = trimmed_archetype
+            .iter()
+            .map(|x| &x.ty)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let result = trimmed_type_ids.binary_search(&any::TypeId::of::<T>());
+
+        let idx = if result.is_ok() {
+            panic!("?");
+        } else {
+            result.unwrap_err()
+        };
+
+        trimmed_archetype.insert(
+            idx,
+            ArchetypeInfo {
+                ty: any::TypeId::of::<T>(),
+                size: mem::size_of::<T>(),
+                name: any::type_name::<T>(),
+                state: ArchetypeState::Resource,
+            },
+        );
+
+        archetype.len = trimmed_archetype.len();
+        for (i, info) in trimmed_archetype.into_iter().enumerate() {
+            archetype.info[i] = Some(info);
+        }
+    }
+
+    fn get(
+        archetype: &Archetype,
+        ptr: *mut u8,
+        entity: *const Entity,
+        translations: &[usize],
+        idx: &mut usize,
+    ) -> Self {
+        let c = unsafe { (ptr.add(translations[*idx]) as *const T).as_ref().unwrap() };
+        *idx += 1;
+        c
+    }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        deps.insert(any::TypeId::of::<T>());
+    }
+}
+
+impl Queryable<EntityMarker> for Entity {
     type Target = Self;
     fn translations(
         translations: &mut Vec<usize>,
@@ -600,394 +679,7 @@ impl Queryable for Entity {
     }
 }
 
-impl<'a, A: Queryable, B: Queryable> Queryable for (A, B) {
-    type Target = Self;
-    fn translations(
-        translations: &mut Vec<usize>,
-        storage_archetype: &Archetype,
-        query_archetype: &Archetype,
-    ) {
-        A::translations(translations, storage_archetype, query_archetype);
-        B::translations(translations, storage_archetype, query_archetype);
-    }
-    fn add(archetype: &mut Archetype) {
-        A::add(archetype);
-        B::add(archetype);
-    }
-    fn get(
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        (
-            A::get(archetype, ptr, entity, translations, idx),
-            B::get(archetype, ptr, entity, translations, idx),
-        )
-    }
 
-    fn refs(deps: &mut HashSet<TypeId>) {
-        A::refs(deps);
-        B::refs(deps);
-    }
-
-    fn muts(deps: &mut HashSet<TypeId>) {
-        A::muts(deps);
-        B::muts(deps);
-    }
-}
-
-impl<'a, A: Queryable, B: Queryable, C: Queryable> Queryable for (A, B, C) {
-    type Target = Self;
-    fn translations(
-        translations: &mut Vec<usize>,
-        storage_archetype: &Archetype,
-        query_archetype: &Archetype,
-    ) {
-        A::translations(translations, storage_archetype, query_archetype);
-        B::translations(translations, storage_archetype, query_archetype);
-        C::translations(translations, storage_archetype, query_archetype);
-    }
-    fn add(archetype: &mut Archetype) {
-        A::add(archetype);
-        B::add(archetype);
-        C::add(archetype);
-    }
-    fn get(
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        (
-            A::get(archetype, ptr, entity, translations, idx),
-            B::get(archetype, ptr, entity, translations, idx),
-            C::get(archetype, ptr, entity, translations, idx),
-        )
-    }
-
-    fn refs(deps: &mut HashSet<TypeId>) {
-        A::refs(deps);
-        B::refs(deps);
-        C::refs(deps);
-    }
-
-    fn muts(deps: &mut HashSet<TypeId>) {
-        A::muts(deps);
-        B::muts(deps);
-        C::muts(deps);
-    }
-}
-
-impl<'a, A: Queryable, B: Queryable, C: Queryable, D: Queryable> Queryable for (A, B, C, D) {
-    type Target = Self;
-    fn translations(
-        translations: &mut Vec<usize>,
-        storage_archetype: &Archetype,
-        query_archetype: &Archetype,
-    ) {
-        A::translations(translations, storage_archetype, query_archetype);
-        B::translations(translations, storage_archetype, query_archetype);
-        C::translations(translations, storage_archetype, query_archetype);
-        D::translations(translations, storage_archetype, query_archetype);
-    }
-    fn add(archetype: &mut Archetype) {
-        A::add(archetype);
-        B::add(archetype);
-        C::add(archetype);
-        D::add(archetype)
-    }
-    fn get(
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        (
-            A::get(archetype, ptr, entity, translations, idx),
-            B::get(archetype, ptr, entity, translations, idx),
-            C::get(archetype, ptr, entity, translations, idx),
-            D::get(archetype, ptr, entity, translations, idx),
-        )
-    }
-
-    fn refs(deps: &mut HashSet<TypeId>) {
-        A::refs(deps);
-        B::refs(deps);
-        C::refs(deps);
-        D::refs(deps);
-    }
-
-    fn muts(deps: &mut HashSet<TypeId>) {
-        A::muts(deps);
-        B::muts(deps);
-        C::muts(deps);
-        D::muts(deps);
-    }
-}
-impl<'a, A: Queryable, B: Queryable, C: Queryable, D: Queryable, E: Queryable> Queryable
-    for (A, B, C, D, E)
-{
-    type Target = Self;
-    fn translations(
-        translations: &mut Vec<usize>,
-        storage_archetype: &Archetype,
-        query_archetype: &Archetype,
-    ) {
-        A::translations(translations, storage_archetype, query_archetype);
-        B::translations(translations, storage_archetype, query_archetype);
-        C::translations(translations, storage_archetype, query_archetype);
-        D::translations(translations, storage_archetype, query_archetype);
-        E::translations(translations, storage_archetype, query_archetype);
-    }
-    fn add(archetype: &mut Archetype) {
-        A::add(archetype);
-        B::add(archetype);
-        C::add(archetype);
-        D::add(archetype);
-        E::add(archetype);
-    }
-    fn get(
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        (
-            A::get(archetype, ptr, entity, translations, idx),
-            B::get(archetype, ptr, entity, translations, idx),
-            C::get(archetype, ptr, entity, translations, idx),
-            D::get(archetype, ptr, entity, translations, idx),
-            E::get(archetype, ptr, entity, translations, idx),
-        )
-    }
-
-    fn refs(deps: &mut HashSet<TypeId>) {
-        A::refs(deps);
-        B::refs(deps);
-        C::refs(deps);
-        D::refs(deps);
-        E::refs(deps);
-    }
-
-    fn muts(deps: &mut HashSet<TypeId>) {
-        A::muts(deps);
-        B::muts(deps);
-        C::muts(deps);
-        D::muts(deps);
-        E::muts(deps);
-    }
-}
-impl<'a, A: Queryable, B: Queryable, C: Queryable, D: Queryable, E: Queryable, F: Queryable>
-    Queryable for (A, B, C, D, E, F)
-{
-    type Target = Self;
-    fn translations(
-        translations: &mut Vec<usize>,
-        storage_archetype: &Archetype,
-        query_archetype: &Archetype,
-    ) {
-        A::translations(translations, storage_archetype, query_archetype);
-        B::translations(translations, storage_archetype, query_archetype);
-        C::translations(translations, storage_archetype, query_archetype);
-        D::translations(translations, storage_archetype, query_archetype);
-        E::translations(translations, storage_archetype, query_archetype);
-        F::translations(translations, storage_archetype, query_archetype);
-    }
-    fn add(archetype: &mut Archetype) {
-        A::add(archetype);
-        B::add(archetype);
-        C::add(archetype);
-        D::add(archetype);
-        E::add(archetype);
-        F::add(archetype);
-    }
-    fn get(
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        (
-            A::get(archetype, ptr, entity, translations, idx),
-            B::get(archetype, ptr, entity, translations, idx),
-            C::get(archetype, ptr, entity, translations, idx),
-            D::get(archetype, ptr, entity, translations, idx),
-            E::get(archetype, ptr, entity, translations, idx),
-            F::get(archetype, ptr, entity, translations, idx),
-        )
-    }
-    fn refs(deps: &mut HashSet<TypeId>) {
-        A::refs(deps);
-        B::refs(deps);
-        C::refs(deps);
-        D::refs(deps);
-        E::refs(deps);
-        F::refs(deps);
-    }
-
-    fn muts(deps: &mut HashSet<TypeId>) {
-        A::muts(deps);
-        B::muts(deps);
-        C::muts(deps);
-        D::muts(deps);
-        E::muts(deps);
-        F::muts(deps);
-    }
-}
-impl<
-        'a,
-        A: Queryable,
-        B: Queryable,
-        C: Queryable,
-        D: Queryable,
-        E: Queryable,
-        F: Queryable,
-        G: Queryable,
-    > Queryable for (A, B, C, D, E, F, G)
-{
-    type Target = Self;
-    fn translations(
-        translations: &mut Vec<usize>,
-        storage_archetype: &Archetype,
-        query_archetype: &Archetype,
-    ) {
-        A::translations(translations, storage_archetype, query_archetype);
-        B::translations(translations, storage_archetype, query_archetype);
-        C::translations(translations, storage_archetype, query_archetype);
-        D::translations(translations, storage_archetype, query_archetype);
-        E::translations(translations, storage_archetype, query_archetype);
-        F::translations(translations, storage_archetype, query_archetype);
-        G::translations(translations, storage_archetype, query_archetype);
-    }
-    fn add(archetype: &mut Archetype) {
-        A::add(archetype);
-        B::add(archetype);
-        C::add(archetype);
-        D::add(archetype);
-        E::add(archetype);
-        F::add(archetype);
-        G::add(archetype);
-    }
-    fn get(
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        (
-            A::get(archetype, ptr, entity, translations, idx),
-            B::get(archetype, ptr, entity, translations, idx),
-            C::get(archetype, ptr, entity, translations, idx),
-            D::get(archetype, ptr, entity, translations, idx),
-            E::get(archetype, ptr, entity, translations, idx),
-            F::get(archetype, ptr, entity, translations, idx),
-            G::get(archetype, ptr, entity, translations, idx),
-        )
-    }
-    fn refs(deps: &mut HashSet<TypeId>) {
-        A::refs(deps);
-        B::refs(deps);
-        C::refs(deps);
-        D::refs(deps);
-        E::refs(deps);
-        F::refs(deps);
-        G::refs(deps);
-    }
-
-    fn muts(deps: &mut HashSet<TypeId>) {
-        A::muts(deps);
-        B::muts(deps);
-        C::muts(deps);
-        D::muts(deps);
-        E::muts(deps);
-        F::muts(deps);
-        G::muts(deps);
-    }
-}
-impl<
-        'a,
-        A: Queryable,
-        B: Queryable,
-        C: Queryable,
-        D: Queryable,
-        E: Queryable,
-        F: Queryable,
-        G: Queryable,
-        H: Queryable,
-    > Queryable for (A, B, C, D, E, F, G, H)
-{
-    type Target = Self;
-    fn translations(
-        translations: &mut Vec<usize>,
-        storage_archetype: &Archetype,
-        query_archetype: &Archetype,
-    ) {
-        A::translations(translations, storage_archetype, query_archetype);
-        B::translations(translations, storage_archetype, query_archetype);
-        C::translations(translations, storage_archetype, query_archetype);
-        D::translations(translations, storage_archetype, query_archetype);
-        E::translations(translations, storage_archetype, query_archetype);
-        F::translations(translations, storage_archetype, query_archetype);
-        G::translations(translations, storage_archetype, query_archetype);
-        H::translations(translations, storage_archetype, query_archetype);
-    }
-    fn add(archetype: &mut Archetype) {
-        A::add(archetype);
-        B::add(archetype);
-        C::add(archetype);
-        D::add(archetype);
-        E::add(archetype);
-        F::add(archetype);
-        G::add(archetype);
-        H::add(archetype);
-    }
-    fn get(
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        (
-            A::get(archetype, ptr, entity, translations, idx),
-            B::get(archetype, ptr, entity, translations, idx),
-            C::get(archetype, ptr, entity, translations, idx),
-            D::get(archetype, ptr, entity, translations, idx),
-            E::get(archetype, ptr, entity, translations, idx),
-            F::get(archetype, ptr, entity, translations, idx),
-            G::get(archetype, ptr, entity, translations, idx),
-            H::get(archetype, ptr, entity, translations, idx),
-        )
-    }
-    fn refs(deps: &mut HashSet<TypeId>) {
-        A::refs(deps);
-        B::refs(deps);
-        C::refs(deps);
-        D::refs(deps);
-        E::refs(deps);
-        F::refs(deps);
-        G::refs(deps);
-        H::refs(deps);
-    }
-
-    fn muts(deps: &mut HashSet<TypeId>) {
-        A::muts(deps);
-        B::muts(deps);
-        C::muts(deps);
-        D::muts(deps);
-        E::muts(deps);
-        F::muts(deps);
-        G::muts(deps);
-        H::muts(deps);
-    }
-}
 pub struct Query<'a, Q: Queryable + ?Sized> {
     mapping: Vec<(Archetype, usize, usize, Vec<usize>, *mut u8, *const Entity)>,
     inner: usize,
@@ -995,14 +687,16 @@ pub struct Query<'a, Q: Queryable + ?Sized> {
     marker: PhantomData<&'a Q>,
 }
 
-unsafe impl<'a, Q: Queryable> Send for Query<'a, Q> {}
-unsafe impl<'a, Q: Queryable> Sync for Query<'a, Q> {}
+band_proc_macro::make_tuples!(16);
 
-pub trait QueryExt: Queryable {
+unsafe impl<'a, QQ, Q: Queryable<QQ>> Send for Query<'a, Q> {}
+unsafe impl<'a, QQ, Q: Queryable<QQ>> Sync for Query<'a, Q> {}
+
+pub trait QueryExt<QQ>: Queryable<QQ> {
     fn query(registry: &mut Registry) -> Query<Self>;
 }
 
-impl<'a, T: Queryable> QueryExt for T {
+impl<'a, QQ, T: Queryable<QQ>> QueryExt<QQ> for T {
     fn query(registry: &mut Registry) -> Query<Self> {
         let mut query_archetype = Default::default();
 
@@ -1042,7 +736,7 @@ impl<'a, T: Queryable> QueryExt for T {
     }
 }
 
-impl<'a, Q: Queryable> Iterator for Query<'a, Q> {
+impl<'a, QQ, Q: Queryable<QQ>> Iterator for Query<'a, Q> {
     type Item = Q;
     fn next(&mut self) -> Option<Self::Item> {
         if self.mapping.len() == 0 {
@@ -1070,33 +764,33 @@ impl<'a, Q: Queryable> Iterator for Query<'a, Q> {
     }
 }
 
-pub trait System<T> {
-    type Param: Queryable;
+pub trait System<T, QQ> {
+    type Param: Queryable<QQ>;
     fn execute(&self, registry: *mut Registry, param: Self::Param);
     fn ref_deps(&self) -> HashSet<TypeId>;
     fn mut_deps(&self) -> HashSet<TypeId>;
 }
 
-pub struct WrapperSystem<'a, T: Queryable> {
-    sub_system: Box<dyn System<T, Param = T>>,
+pub struct WrapperSystem<'a, QQ, T: Queryable<QQ>> {
+    sub_system: Box<dyn System<T, QQ, Param = T>>,
     marker: PhantomData<&'a T>,
 }
 
-pub struct SubSystem<T: Queryable + Send>(*mut Registry, *const dyn System<T, Param = T>);
+pub struct SubSystem<QQ, T: Queryable<QQ> + Send>(*mut Registry, *const dyn System<T, QQ, Param = T>);
 
-impl<T: Queryable + Send> Clone for SubSystem<T> {
+impl<QQ, T: Queryable<QQ> + Send> Clone for SubSystem<QQ, T> {
     fn clone(&self) -> Self {
         Self(self.0, self.1)
     }
 }
 
-unsafe impl<T: Queryable + Send> Send for SubSystem<T> {}
-unsafe impl<T: Queryable + Send> Sync for SubSystem<T> {}
+unsafe impl<QQ, T: Queryable<QQ> + Send> Send for SubSystem<QQ, T> {}
+unsafe impl<QQ, T: Queryable<QQ> + Send> Sync for SubSystem<QQ, T> {}
 
-impl<'a, A: Queryable + Send> System<()> for WrapperSystem<'a, A> {
+impl<'a, QQ, A: Queryable<QQ> + Send> System<(), ()> for WrapperSystem<'a, QQ, A> {
     type Param = ();
     fn execute(&self, registry: *mut Registry, _: Self::Param) {
-        let sub_system = SubSystem::<A>(registry, &*self.sub_system as *const _);
+        let sub_system = SubSystem::<QQ, A>(registry, &*self.sub_system as *const _);
         for param in A::query(unsafe { registry.as_mut().unwrap() }) {
             let SubSystem(registry, sub_system) = sub_system.clone();
             unsafe { sub_system.as_ref().unwrap().execute(registry, param) };
@@ -1114,69 +808,7 @@ impl<'a, A: Queryable + Send> System<()> for WrapperSystem<'a, A> {
     }
 }
 
-impl<A: Queryable, Function: Fn(A)> System<(A,)> for Function {
-    type Param = A;
-    fn execute(&self, _: *mut Registry, a: Self::Param) {
-        self.call((a,))
-    }
-
-    fn ref_deps(&self) -> HashSet<TypeId> {
-        unreachable!()
-    }
-
-    fn mut_deps(&self) -> HashSet<TypeId> {
-        unreachable!()
-    }
-}
-
-impl<A: Queryable, B: Queryable, Function: Fn(A, B)> System<(A, B)> for Function {
-    type Param = (A, B);
-    fn execute(&self, _: *mut Registry, (a, b): Self::Param) {
-        self.call((a, b))
-    }
-
-    fn ref_deps(&self) -> HashSet<TypeId> {
-        unreachable!()
-    }
-
-    fn mut_deps(&self) -> HashSet<TypeId> {
-        unreachable!()
-    }
-}
-
-impl<'a, A: Queryable, B: Queryable, C: Queryable, Function: Fn(A, B, C)> System<(A, B, C)>
-    for Function
-{
-    type Param = (A, B, C);
-    fn execute(&self, _: *mut Registry, (a, b, c): Self::Param) {
-        self.call((a, b, c))
-    }
-
-    fn ref_deps(&self) -> HashSet<TypeId> {
-        unreachable!()
-    }
-
-    fn mut_deps(&self) -> HashSet<TypeId> {
-        unreachable!()
-    }
-}
-
-impl<A: Queryable, B: Queryable, C: Queryable, D: Queryable, Function: Fn(A, B, C, D)>
-    System<(A, B, C, D)> for Function
-{
-    type Param = (A, B, C, D);
-    fn execute(&self, _: *mut Registry, (a, b, c, d): Self::Param) {
-        self.call((a, b, c, d))
-    }
-
-    fn ref_deps(&self) -> HashSet<TypeId> {
-        unreachable!()
-    }
-
-    fn mut_deps(&self) -> HashSet<TypeId> {
-        unreachable!()
-    }
-}
+band_proc_macro::make_systems!(16);
 
 pub type NodeId = usize;
 pub type Node = Box<dyn System<(), Param = ()>>;
@@ -1425,7 +1057,7 @@ impl Registry {
                 ty: component.id(),
                 size: component.size(),
                 name: any::type_name::<T>(),
-                state: ArchetypeState::Type,
+                state: ArchetypeState::Component,
             },
         );
         debug_assert!(archetype.len + 1 < 32, "too many components in storage");

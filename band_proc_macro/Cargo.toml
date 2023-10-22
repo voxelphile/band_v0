@@ -1,14 +1,15 @@
 [package]
-name = "band"
+name = "band_proc_macro"
 version = "0.1.0"
 edition = "2021"
-description = "Soon to be an ECS."
+description = "Support library for band"
 license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-hashbrown = "0.14.2"
-tokio = { version = "1.33.0", features = ["full"] }
-futures = "0.3.28"
-band_proc_macro = "0.1"
+syn = "2.0.38"
+quote = "1.0.33"
+
+[lib]
+proc-macro = true

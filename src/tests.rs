@@ -157,7 +157,7 @@ async fn graph_works() {
     let mut scheduler = Scheduler::new(8);
     scheduler.add(first_system);
     scheduler.add(second_system);
-    scheduler.add(third_syst em);
+    scheduler.add(third_system);
     scheduler.add(forth_system);
     scheduler.add(fifth_system);
     scheduler.add(sixth_system);

@@ -58,7 +58,7 @@ pub fn make_tuples(input: TokenStream) -> TokenStream {
             result.push_str(&format!("T{}::get(archetype, ptr, entity, translations, idx);\n", i));
         }
 
-        result.push_str(")\n}\n");
+        result.push_str("}\n}\n");
 
         result.push_str("fn refs(deps: &mut HashSet<TypeId>) {\n");
 

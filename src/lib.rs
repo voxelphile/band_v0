@@ -269,7 +269,7 @@ pub trait Queryable<T> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Without<T>(PhantomData<T>);
 
-impl Queryable for () {
+impl Queryable<()> for () {
     type Target = Self;
 
     fn add(archetype: &mut Archetype) {}
@@ -358,7 +358,7 @@ impl<'a, T: Component> Queryable<ComponentMarker> for Without<T> {
     }
 }
 
-impl<'a, A, T: Queryable<A> + 'static> Queryable<OptionalMarker> for Option<T> {
+impl<'a, A, T: Queryable<A> + 'static> Queryable<(OptionalMarker, A)> for Option<T> {
     type Target = Self;
     fn add(archetype: &mut Archetype) {
         let mut trimmed_archetype = archetype
@@ -680,7 +680,7 @@ impl Queryable<EntityMarker> for Entity {
 }
 
 
-pub struct Query<'a, Q: Queryable + ?Sized> {
+pub struct Query<'a, QQ: ?Sized, Q: Queryable<QQ> + ?Sized> {
     mapping: Vec<(Archetype, usize, usize, Vec<usize>, *mut u8, *const Entity)>,
     inner: usize,
     outer: usize,
@@ -689,15 +689,15 @@ pub struct Query<'a, Q: Queryable + ?Sized> {
 
 band_proc_macro::make_tuples!(16);
 
-unsafe impl<'a, QQ, Q: Queryable<QQ>> Send for Query<'a, Q> {}
-unsafe impl<'a, QQ, Q: Queryable<QQ>> Sync for Query<'a, Q> {}
+unsafe impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Send for Query<'a, Q, QQ> {}
+unsafe impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Sync for Query<'a, Q, QQ> {}
 
 pub trait QueryExt<QQ>: Queryable<QQ> {
-    fn query(registry: &mut Registry) -> Query<Self>;
+    fn query(registry: &mut Registry) -> Query<Self, QQ>;
 }
 
-impl<'a, QQ, T: Queryable<QQ>> QueryExt<QQ> for T {
-    fn query(registry: &mut Registry) -> Query<Self> {
+impl<'a, QQ: ?Sized, T: Queryable<QQ>> QueryExt<QQ> for T {
+    fn query(registry: &mut Registry) -> Query<Self, QQ> {
         let mut query_archetype = Default::default();
 
         T::add(&mut query_archetype);
@@ -736,7 +736,7 @@ impl<'a, QQ, T: Queryable<QQ>> QueryExt<QQ> for T {
     }
 }
 
-impl<'a, QQ, Q: Queryable<QQ>> Iterator for Query<'a, Q> {
+impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Iterator for Query<'a, Q, QQ> {
     type Item = Q;
     fn next(&mut self) -> Option<Self::Item> {
         if self.mapping.len() == 0 {
@@ -771,26 +771,26 @@ pub trait System<T, QQ> {
     fn mut_deps(&self) -> HashSet<TypeId>;
 }
 
-pub struct WrapperSystem<'a, QQ, T: Queryable<QQ>> {
-    sub_system: Box<dyn System<T, QQ, Param = T>>,
+pub struct WrapperSystem<'a, QQ: ?Sized, T: Queryable<QQ>> {
+    sub_system: Box<dyn System<T, QQ: ?Sized, Param = T>>,
     marker: PhantomData<&'a T>,
 }
 
-pub struct SubSystem<QQ, T: Queryable<QQ> + Send>(*mut Registry, *const dyn System<T, QQ, Param = T>);
+pub struct SubSystem<QQ: ?Sized, T: Queryable<QQ> + Send>(*mut Registry, *const dyn System<T, QQ: ?Sized, Param = T>);
 
-impl<QQ, T: Queryable<QQ> + Send> Clone for SubSystem<QQ, T> {
+impl<QQ: ?Sized, T: Queryable<QQ> + Send> Clone for SubSystem<QQ: ?Sized, T> {
     fn clone(&self) -> Self {
         Self(self.0, self.1)
     }
 }
 
-unsafe impl<QQ, T: Queryable<QQ> + Send> Send for SubSystem<QQ, T> {}
-unsafe impl<QQ, T: Queryable<QQ> + Send> Sync for SubSystem<QQ, T> {}
+unsafe impl<QQ: ?Sized, T: Queryable<QQ> + Send> Send for SubSystem<QQ: ?Sized, T> {}
+unsafe impl<QQ: ?Sized, T: Queryable<QQ> + Send> Sync for SubSystem<QQ: ?Sized, T> {}
 
-impl<'a, QQ, A: Queryable<QQ> + Send> System<(), ()> for WrapperSystem<'a, QQ, A> {
+impl<'a, QQ: ?Sized, A: Queryable<QQ> + Send> System<(), ()> for WrapperSystem<'a, QQ: ?Sized, A> {
     type Param = ();
     fn execute(&self, registry: *mut Registry, _: Self::Param) {
-        let sub_system = SubSystem::<QQ, A>(registry, &*self.sub_system as *const _);
+        let sub_system = SubSystem::<QQ: ?Sized, A>(registry, &*self.sub_system as *const _);
         for param in A::query(unsafe { registry.as_mut().unwrap() }) {
             let SubSystem(registry, sub_system) = sub_system.clone();
             unsafe { sub_system.as_ref().unwrap().execute(registry, param) };
@@ -811,7 +811,7 @@ impl<'a, QQ, A: Queryable<QQ> + Send> System<(), ()> for WrapperSystem<'a, QQ, A
 band_proc_macro::make_systems!(16);
 
 pub type NodeId = usize;
-pub type Node = Box<dyn System<(), Param = ()>>;
+pub type Node = Box<dyn System<(), (), Param = ()>>;
 #[derive(Default)]
 pub struct Graph {
     nodes: Vec<Node>,
@@ -858,7 +858,7 @@ pub struct Scheduler {
     work_rx: UnboundedReceiver<WorkUnit>,
 }
 
-pub struct WorkUnit(NodeId, *mut Registry, *mut dyn System<(), Param = ()>);
+pub struct WorkUnit(NodeId, *mut Registry, *mut dyn System<(), (), Param = ()>);
 
 unsafe impl Send for WorkUnit {}
 unsafe impl Sync for WorkUnit {}
@@ -873,7 +873,7 @@ impl Scheduler {
             work_rx,
         }
     }
-    fn add<A: Queryable + 'static + Send, T: System<A, Param = A> + 'static>(&mut self, system: T) {
+    fn add<AA, A: Queryable<AA> + 'static + Send, T: System<A, AA, Param = A> + 'static>(&mut self, system: T) {
         let sub_system = Box::new(system);
         let wrapper_system = Box::new(WrapperSystem {
             sub_system,

@@ -92,7 +92,7 @@ fn make_systems(input: TokenStream) -> TokenStream {
             result.push_str(&format!("TT{}", i));
             result.push_str(&format!("T{}: Queryable<TT{}>, ", i, i));
         }
-        result.push("Function: Fn(");
+        result.push_str("Function: Fn(");
         for i in 0..len {
             let end = if i == len - 1 && len != 1 {
                 ""

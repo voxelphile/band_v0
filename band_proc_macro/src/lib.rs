@@ -9,7 +9,7 @@ pub fn make_tuples(input: TokenStream) -> TokenStream {
     let mut result = String::new();
     for len in 1..=max_len {
         result.push_str("impl<'a");
-        for i 0..len {
+        for i in 0..len {
             let end = if i == len - 1 {
                 ""
             } else {
@@ -111,7 +111,7 @@ pub fn make_systems(input: TokenStream) -> TokenStream {
             };
             result.push_str(&format!("T{}{}", i, end));
         }
-        result.push_str(");\n")
+        result.push_str(");\n");
         result.push_str("fn execute(&self, _: *mut Registry, (");
         for i in 0..len {
             let end = if i == len - 1 {

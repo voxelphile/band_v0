@@ -5,7 +5,7 @@ use syn::{Lit, parse_macro_input};
 #[proc_macro]
 pub fn make_tuples(input: TokenStream) -> TokenStream {
     let Lit::Int(max_len_lit) = parse_macro_input!(input as Lit);
-    let max_len = max_len_lit.base10_parse::<usize>();
+    let max_len = max_len_lit.base10_parse::<usize>().unwrap();
     let mut result = String::new();
     for len in 1..=max_len {
         result.push_str("impl<'a");
@@ -82,7 +82,7 @@ pub fn make_tuples(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro]
-fn make_systems(input: TokenStream) -> TokenStream {
+pub fn make_systems(input: TokenStream) -> TokenStream {
     let Lit::Int(max_len_lit) = parse_macro_input!(input as Lit);
     let max_len = max_len_lit.base10_parse::<usize>().unwrap();
     let mut result = String::new();

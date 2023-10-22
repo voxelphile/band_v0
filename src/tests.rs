@@ -1,7 +1,4 @@
-use std::{
-    io::{self, Write},
-    time,
-};
+use std::{io::{self, Write}, thread, time};
 
 use hashbrown::HashMap;
 
@@ -137,13 +134,14 @@ fn sixth_system(e: Entity, d: &DropTest, t: &Tuple) {
     thread::sleep(Duration::from_millis(2));
 }
 fn seventh_system(e: Entity, d: &mut DropTest, t: &mut Tuple) {
-    thread::sleep(Duration::from_millis(2));
+    tokio::time::sleep(Duration::from_millis(2));
 }
-#[test]
-fn graph_works() {
+#[tokio::test]
+async fn graph_works() {
     let mut registry = Registry::default();
-    for i in 0..1000usize {
+    for i in 0..10000usize {
         let e = registry.spawn();
+        println!("{}", i);
         if i % 2 == 0 {
             registry.insert(e, DropTest { s: i as u32 });
         }
@@ -159,12 +157,13 @@ fn graph_works() {
     let mut scheduler = Scheduler::new(8);
     scheduler.add(first_system);
     scheduler.add(second_system);
-    scheduler.add(third_system);
+    scheduler.add(third_syst em);
     scheduler.add(forth_system);
     scheduler.add(fifth_system);
     scheduler.add(sixth_system);
     scheduler.add(seventh_system);
-    scheduler.execute(&mut registry);
+    dbg!("start");
+    scheduler.execute(&mut registry).await;
     dbg!(std::time::Instant::now().duration_since(i));
     dbg!("vs");
     let i = std::time::Instant::now();

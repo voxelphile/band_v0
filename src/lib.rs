@@ -1,4 +1,4 @@
-#![feature(fn_traits)]
+#![feature(fn_traits, async_closure, async_fn_in_trait)]
 
 use core::{arch, slice};
 use std::{
@@ -8,9 +8,11 @@ use std::{
     mem::{self, ManuallyDrop},
     ops, ptr,
     sync::Arc,
-    thread::{self, JoinHandle},
     time::Duration,
 };
+use std::future::Future;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 
 mod tests;
 
@@ -18,8 +20,10 @@ pub mod prelude {
     pub use crate::*;
 }
 
-use crossbeam::channel::{unbounded, Receiver, Sender};
 use hashbrown::{HashMap, HashSet};
+use tokio::sync::mpsc::{Receiver, Sender, unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 pub trait Component: 'static + Send + Sync {
     fn id(&self) -> TypeId;
@@ -1092,15 +1096,11 @@ unsafe impl<T: Queryable + Send> Sync for SubSystem<T> {}
 impl<'a, A: Queryable + Send> System<()> for WrapperSystem<'a, A> {
     type Param = ();
     fn execute(&self, registry: *mut Registry, _: Self::Param) {
-        use rayon::iter::*;
         let sub_system = SubSystem::<A>(registry, &*self.sub_system as *const _);
-        A::query(unsafe { registry.as_mut().unwrap() })
-            .into_iter()
-            .par_bridge()
-            .for_each(|param| {
-                let SubSystem(registry, sub_system) = sub_system.clone();
-                unsafe { sub_system.as_ref().unwrap().execute(registry, param) };
-            });
+        for param in A::query(unsafe { registry.as_mut().unwrap() }) {
+            let SubSystem(registry, sub_system) = sub_system.clone();
+            unsafe { sub_system.as_ref().unwrap().execute(registry, param) };
+        }
     }
     fn ref_deps(&self) -> HashSet<TypeId> {
         let mut deps = Default::default();
@@ -1221,51 +1221,24 @@ impl Graph {
 }
 
 pub struct Scheduler {
-    workers: Vec<JoinHandle<()>>,
     graph: Graph,
-    work_tx: Sender<WorkUnit>,
-    done_rx: Receiver<NodeId>,
+    work_tx: UnboundedSender<WorkUnit>,
+    work_rx: UnboundedReceiver<WorkUnit>,
 }
 
 pub struct WorkUnit(NodeId, *mut Registry, *mut dyn System<(), Param = ()>);
 
 unsafe impl Send for WorkUnit {}
+unsafe impl Sync for WorkUnit {}
 
 impl Scheduler {
     pub fn new(workers: usize) -> Self {
-        let (work_tx, work_rx) = unbounded::<WorkUnit>();
-        let (done_tx, done_rx) = unbounded::<NodeId>();
-        let workers = (0..workers)
-            .into_iter()
-            .map(|i| {
-                let work_rx = work_rx.clone();
-                let done_tx = done_tx.clone();
-
-                thread::Builder::new()
-                    .name(format!("Worker {i}"))
-                    .spawn(move || loop {
-                        let Ok(WorkUnit(id, registry, system)) = work_rx.try_recv() else {
-                        thread::sleep(Duration::from_nanos(1));
-                        continue;
-                    };
-
-                        unsafe {
-                            system.as_ref().unwrap().execute(registry, ());
-                        }
-
-                        done_tx
-                            .send(id)
-                            .expect("failed to signal work unit as done");
-                    })
-                    .expect("failed to start worker")
-            })
-            .collect::<Vec<_>>();
+        let (work_tx, work_rx) = unbounded_channel();
 
         Self {
-            workers,
             graph: Default::default(),
             work_tx,
-            done_rx,
+            work_rx,
         }
     }
     fn add<A: Queryable + 'static + Send, T: System<A, Param = A> + 'static>(&mut self, system: T) {
@@ -1276,32 +1249,55 @@ impl Scheduler {
         });
         self.graph.add(wrapper_system);
     }
-    fn execute(&self, registry: &mut Registry) {
+    async fn execute(&self, registry: &mut Registry) {
         let mut executing = Vec::new();
 
         let mut nodes_iter = self.graph.nodes.iter().enumerate();
+        let mut futures = FuturesUnordered::default();
         loop {
             let Some((id, node)) = nodes_iter.next() else {
                 break;
             };
 
-            while 'a: loop {
-                for id in &executing {
+            let finished = |executing: &[NodeId]| -> bool {
+                for id in executing {
                     if self.graph.dependencies[id].contains(id) {
-                        break 'a true;
+                        return false;
                     }
                 }
-                break 'a false;
-            } {
-                while let Ok(id) = self.done_rx.try_recv() {
+                true
+            };
+
+            loop {
+                if (finished)(&executing) {
+                    break;
+                }
+                while let Some(Ok(id)) = futures.next().await {
                     executing.remove(id);
                 }
             }
 
             executing.push(id);
-            self.work_tx
-                .try_send(WorkUnit(id, registry, (&**node) as *const _ as *mut _))
-                .expect("failed to send work unit");
+
+            fn work_executor(work_unit: WorkUnit) -> impl FnOnce() -> NodeId + Send + 'static {
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(work_unit);
+                move || -> NodeId {
+                    let WorkUnit(id, registry, system) = rx.blocking_recv().expect("?");
+
+                    unsafe {
+                        system.as_ref().unwrap().execute(registry, ());
+                    }
+
+                    id
+                }
+            }
+
+            let work_unit = WorkUnit(id, registry, (&**node) as *const _ as *mut _);
+
+            let handle: JoinHandle<NodeId> = tokio::task::spawn_blocking(work_executor(work_unit));
+
+            futures.push(handle);
         }
     }
 }

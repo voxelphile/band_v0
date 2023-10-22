@@ -9,5 +9,6 @@ license = "MIT"
 
 [dependencies]
 hashbrown = "*"
-crossbeam = "*"
 rayon = "*"
+tokio = { version = "*", features = ["full"] }
+futures = "*"

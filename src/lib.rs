@@ -1,5 +1,5 @@
 #![feature(fn_traits, async_closure, async_fn_in_trait)]
-
+pub use band_proc_macro::{Component, Resource};
 use core::{arch, slice};
 use std::{
     any::{self, TypeId},
@@ -34,24 +34,6 @@ pub trait Component: 'static + Send + Sync {
 pub trait Resource: 'static + Send + Sync {
     fn id(&self) -> TypeId;
     fn size(&self) -> usize;
-}
-
-impl<T: 'static + Send + Sync> Component for T {
-    fn id(&self) -> TypeId {
-        any::TypeId::of::<Self>()
-    }
-    fn size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
-}
-
-impl<T: 'static + Send + Sync> Resource for T {
-    fn id(&self) -> TypeId {
-        any::TypeId::of::<Self>()
-    }
-    fn size(&self) -> usize {
-        mem::size_of::<Self>()
-    }
 }
 
 pub type Identifier = usize;
@@ -247,7 +229,7 @@ impl Storage {
     }
 }
 
-pub trait Queryable<T> {
+pub trait Queryable<T: ?Sized> {
     type Target;
     fn add(archetype: &mut Archetype);
     fn translations(
@@ -256,6 +238,7 @@ pub trait Queryable<T> {
         query_archetype: &Archetype,
     );
     fn get(
+        registry: *mut Registry,
         archetype: &Archetype,
         ptr: *mut u8,
         entity: *const Entity,
@@ -282,6 +265,7 @@ impl Queryable<()> for () {
     }
 
     fn get(
+        registry: *mut Registry,
         archetype: &Archetype,
         ptr: *mut u8,
         entity: *const Entity,
@@ -295,7 +279,8 @@ pub struct ComponentMarker;
 pub struct EntityMarker;
 pub struct ResourceMarker;
 pub struct MultiMarker;
-pub struct OptionalMarker;
+pub struct OptionalComponentMarker;
+pub struct OptionalResourceMarker;
 pub struct WithoutMarker;
 
 impl<'a, T: Component> Queryable<ComponentMarker> for Without<T> {
@@ -348,6 +333,7 @@ impl<'a, T: Component> Queryable<ComponentMarker> for Without<T> {
     }
 
     fn get(
+        registry: *mut Registry,
         archetype: &Archetype,
         ptr: *mut u8,
         entity: *const Entity,
@@ -358,7 +344,7 @@ impl<'a, T: Component> Queryable<ComponentMarker> for Without<T> {
     }
 }
 
-impl<'a, A, T: Queryable<A> + 'static> Queryable<(OptionalMarker, A)> for Option<T> {
+impl<T: Queryable<ComponentMarker> + 'static> Queryable<OptionalComponentMarker> for Option<T> {
     type Target = Self;
     fn add(archetype: &mut Archetype) {
         let mut trimmed_archetype = archetype
@@ -411,6 +397,7 @@ impl<'a, A, T: Queryable<A> + 'static> Queryable<(OptionalMarker, A)> for Option
     }
 
     fn get(
+        registry: *mut Registry,
         archetype: &Archetype,
         ptr: *mut u8,
         entity: *const Entity,
@@ -428,11 +415,84 @@ impl<'a, A, T: Queryable<A> + 'static> Queryable<(OptionalMarker, A)> for Option
             })
             .is_some()
         {
-            let c = Some(T::get(archetype, ptr, entity, translations, idx));
+            let c = Some(T::get(registry, archetype, ptr, entity, translations, idx));
             c
         } else {
             None
         }
+    }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        T::refs(deps);
+    }
+
+    fn muts(deps: &mut HashSet<TypeId>) {
+        T::muts(deps);
+    }
+}
+
+
+impl<'a, T: Queryable<ResourceMarker> + 'static> Queryable<OptionalResourceMarker> for Option<T> where <T as Queryable<ResourceMarker>>::Target: Resource {
+    type Target = Self;
+    fn add(archetype: &mut Archetype) {
+        let mut trimmed_archetype = archetype
+            .info
+            .iter()
+            .cloned()
+            .map(Option::unwrap)
+            .map(|x| x)
+            .take(archetype.len)
+            .collect::<Vec<_>>();
+
+        let mut trimmed_type_ids = trimmed_archetype
+            .iter()
+            .map(|x| &x.ty)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let result = trimmed_type_ids.binary_search(&any::TypeId::of::<T>());
+
+        let idx = if result.is_ok() {
+            panic!("?");
+        } else {
+            result.unwrap_err()
+        };
+
+        trimmed_archetype.insert(
+            idx,
+            ArchetypeInfo {
+                ty: any::TypeId::of::<T::Target>(),
+                name: any::type_name::<T::Target>(),
+                size: mem::size_of::<T::Target>(),
+                state: ArchetypeState::Optional,
+            },
+        );
+
+        archetype.len = trimmed_archetype.len();
+        for (i, info) in trimmed_archetype.into_iter().enumerate() {
+            archetype.info[i] = Some(info);
+        }
+    }
+
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
+        if let Some(x) = storage_archetype.translation(any::TypeId::of::<T::Target>()) {
+            translations.push(x);
+        }
+    }
+
+    fn get(
+        registry: *mut Registry,
+        archetype: &Archetype,
+        ptr: *mut u8,
+        entity: *const Entity,
+        translations: &[usize],
+        idx: &mut usize,
+    ) -> Self {
+        unsafe { (&mut registry.as_mut().unwrap().resource_mut::<T::Target>() as *mut Option<&mut T::Target>).cast::<Option<T>>().read() }
     }
 
     fn refs(deps: &mut HashSet<TypeId>) {
@@ -498,6 +558,7 @@ impl<'a, T: Component> Queryable<ComponentMarker> for &'a T {
     }
 
     fn get(
+        registry: *mut Registry,
         archetype: &Archetype,
         ptr: *mut u8,
         entity: *const Entity,
@@ -568,6 +629,7 @@ impl<'a, T: Component> Queryable<ComponentMarker> for &'a mut T {
     }
 
     fn get(
+        registry: *mut Registry,
         archetype: &Archetype,
         ptr: *mut u8,
         entity: *const Entity,
@@ -595,11 +657,6 @@ impl<'a, T: Resource> Queryable<ResourceMarker> for &'a T {
         storage_archetype: &Archetype,
         query_archetype: &Archetype,
     ) {
-        translations.push(
-            storage_archetype
-                .translation(any::TypeId::of::<T>())
-                .unwrap(),
-        );
     }
     fn add(archetype: &mut Archetype) {
         let mut trimmed_archetype = archetype
@@ -642,18 +699,85 @@ impl<'a, T: Resource> Queryable<ResourceMarker> for &'a T {
     }
 
     fn get(
+        registry: *mut Registry,
         archetype: &Archetype,
         ptr: *mut u8,
         entity: *const Entity,
         translations: &[usize],
         idx: &mut usize,
     ) -> Self {
-        let c = unsafe { (ptr.add(translations[*idx]) as *const T).as_ref().unwrap() };
-        *idx += 1;
-        c
+        unsafe { registry.as_mut().unwrap().resource().expect("resource not found") }
     }
 
     fn refs(deps: &mut HashSet<TypeId>) {
+        deps.insert(any::TypeId::of::<T>());
+    }
+}
+
+
+impl<'a, T: Resource> Queryable<ResourceMarker> for &'a mut T {
+    type Target = T;
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
+    }
+    fn add(archetype: &mut Archetype) {
+        let mut trimmed_archetype = archetype
+            .info
+            .iter()
+            .cloned()
+            .map(Option::unwrap)
+            .map(|x| x)
+            .take(archetype.len)
+            .collect::<Vec<_>>();
+
+        let mut trimmed_type_ids = trimmed_archetype
+            .iter()
+            .map(|x| &x.ty)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let result = trimmed_type_ids.binary_search(&any::TypeId::of::<T>());
+
+        let idx = if result.is_ok() {
+            panic!("?");
+        } else {
+            result.unwrap_err()
+        };
+
+        trimmed_archetype.insert(
+            idx,
+            ArchetypeInfo {
+                ty: any::TypeId::of::<T>(),
+                size: mem::size_of::<T>(),
+                name: any::type_name::<T>(),
+                state: ArchetypeState::Resource,
+            },
+        );
+
+        archetype.len = trimmed_archetype.len();
+        for (i, info) in trimmed_archetype.into_iter().enumerate() {
+            archetype.info[i] = Some(info);
+        }
+    }
+
+    fn get(
+        registry: *mut Registry,
+        archetype: &Archetype,
+        ptr: *mut u8,
+        entity: *const Entity,
+        translations: &[usize],
+        idx: &mut usize,
+    ) -> Self {
+        unsafe { registry.as_mut().unwrap().resource_mut().expect("resource not found") }
+    }
+
+    fn refs(deps: &mut HashSet<TypeId>) {
+        deps.insert(any::TypeId::of::<T>());
+    }
+    fn muts(deps: &mut HashSet<TypeId>) {
         deps.insert(any::TypeId::of::<T>());
     }
 }
@@ -669,6 +793,7 @@ impl Queryable<EntityMarker> for Entity {
     fn add(archetype: &mut Archetype) {}
 
     fn get(
+        registry: *mut Registry,
         archetype: &Archetype,
         ptr: *mut u8,
         entity: *const Entity,
@@ -681,23 +806,24 @@ impl Queryable<EntityMarker> for Entity {
 
 
 pub struct Query<'a, QQ: ?Sized, Q: Queryable<QQ> + ?Sized> {
+    registry: *mut Registry,
     mapping: Vec<(Archetype, usize, usize, Vec<usize>, *mut u8, *const Entity)>,
     inner: usize,
     outer: usize,
-    marker: PhantomData<&'a Q>,
+    marker: PhantomData<(&'a Q, &'a QQ)>,
 }
 
 band_proc_macro::make_tuples!(16);
 
-unsafe impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Send for Query<'a, Q, QQ> {}
-unsafe impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Sync for Query<'a, Q, QQ> {}
+unsafe impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Send for Query<'a, QQ, Q> {}
+unsafe impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Sync for Query<'a, QQ, Q> {}
 
-pub trait QueryExt<QQ>: Queryable<QQ> {
-    fn query(registry: &mut Registry) -> Query<Self, QQ>;
+pub trait QueryExt<QQ: ?Sized>: Queryable<QQ> {
+    fn query(registry: &mut Registry) -> Query<QQ, Self>;
 }
 
 impl<'a, QQ: ?Sized, T: Queryable<QQ>> QueryExt<QQ> for T {
-    fn query(registry: &mut Registry) -> Query<Self, QQ> {
+    fn query(registry: &mut Registry) -> Query<QQ, Self> {
         let mut query_archetype = Default::default();
 
         T::add(&mut query_archetype);
@@ -728,6 +854,7 @@ impl<'a, QQ: ?Sized, T: Queryable<QQ>> QueryExt<QQ> for T {
         }
 
         Query {
+            registry,
             mapping,
             inner: 0,
             outer: 0,
@@ -736,7 +863,7 @@ impl<'a, QQ: ?Sized, T: Queryable<QQ>> QueryExt<QQ> for T {
     }
 }
 
-impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Iterator for Query<'a, Q, QQ> {
+impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Iterator for Query<'a, QQ, Q> {
     type Item = Q;
     fn next(&mut self) -> Option<Self::Item> {
         if self.mapping.len() == 0 {
@@ -760,40 +887,40 @@ impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Iterator for Query<'a, Q, QQ> {
 
         self.inner += 1;
 
-        Some(Q::get(archetype, ptr, entity, translations, &mut 0))
+        Some(Q::get(self.registry, archetype, ptr, entity, translations, &mut 0))
     }
 }
 
-pub trait System<T, QQ> {
+pub trait System<T, QQ: ?Sized> {
     type Param: Queryable<QQ>;
-    fn execute(&self, registry: *mut Registry, param: Self::Param);
+    fn execute(&self, registry: *mut Registry, param: *mut Self::Param);
     fn ref_deps(&self) -> HashSet<TypeId>;
     fn mut_deps(&self) -> HashSet<TypeId>;
 }
 
 pub struct WrapperSystem<'a, QQ: ?Sized, T: Queryable<QQ>> {
-    sub_system: Box<dyn System<T, QQ: ?Sized, Param = T>>,
+    sub_system: Box<dyn System<T, QQ, Param = T>>,
     marker: PhantomData<&'a T>,
 }
 
-pub struct SubSystem<QQ: ?Sized, T: Queryable<QQ> + Send>(*mut Registry, *const dyn System<T, QQ: ?Sized, Param = T>);
+pub struct SubSystem<QQ: ?Sized, T: Queryable<QQ> + Send>(*mut Registry, *const dyn System<T, QQ, Param = T>);
 
-impl<QQ: ?Sized, T: Queryable<QQ> + Send> Clone for SubSystem<QQ: ?Sized, T> {
+impl<QQ: ?Sized, T: Queryable<QQ> + Send> Clone for SubSystem<QQ, T> {
     fn clone(&self) -> Self {
         Self(self.0, self.1)
     }
 }
 
-unsafe impl<QQ: ?Sized, T: Queryable<QQ> + Send> Send for SubSystem<QQ: ?Sized, T> {}
-unsafe impl<QQ: ?Sized, T: Queryable<QQ> + Send> Sync for SubSystem<QQ: ?Sized, T> {}
+unsafe impl<QQ: ?Sized, T: Queryable<QQ> + Send> Send for SubSystem<QQ, T> {}
+unsafe impl<QQ: ?Sized, T: Queryable<QQ> + Send> Sync for SubSystem<QQ, T> {}
 
-impl<'a, QQ: ?Sized, A: Queryable<QQ> + Send> System<(), ()> for WrapperSystem<'a, QQ: ?Sized, A> {
+impl<'a, QQ: ?Sized, A: Queryable<QQ> + Send> System<(), ()> for WrapperSystem<'a, QQ, A> {
     type Param = ();
-    fn execute(&self, registry: *mut Registry, _: Self::Param) {
-        let sub_system = SubSystem::<QQ: ?Sized, A>(registry, &*self.sub_system as *const _);
-        for param in A::query(unsafe { registry.as_mut().unwrap() }) {
+    fn execute(&self, registry: *mut Registry, _: *mut Self::Param) {
+        let sub_system = SubSystem::<QQ, A>(registry, &*self.sub_system as *const _);
+        for mut param in A::query(unsafe { registry.as_mut().unwrap() }) {
             let SubSystem(registry, sub_system) = sub_system.clone();
-            unsafe { sub_system.as_ref().unwrap().execute(registry, param) };
+            unsafe { sub_system.as_ref().unwrap().execute(registry, &mut param as *mut _) };
         }
     }
     fn ref_deps(&self) -> HashSet<TypeId> {
@@ -864,7 +991,7 @@ unsafe impl Send for WorkUnit {}
 unsafe impl Sync for WorkUnit {}
 
 impl Scheduler {
-    pub fn new(workers: usize) -> Self {
+    pub fn new() -> Self {
         let (work_tx, work_rx) = unbounded_channel();
 
         Self {
@@ -873,7 +1000,7 @@ impl Scheduler {
             work_rx,
         }
     }
-    fn add<AA, A: Queryable<AA> + 'static + Send, T: System<A, AA, Param = A> + 'static>(&mut self, system: T) {
+    pub fn add<AA: 'static, A: Queryable<AA> + 'static + Send, T: System<A, AA, Param = A> + 'static>(&mut self, system: T) {
         let sub_system = Box::new(system);
         let wrapper_system = Box::new(WrapperSystem {
             sub_system,
@@ -881,7 +1008,7 @@ impl Scheduler {
         });
         self.graph.add(wrapper_system);
     }
-    async fn execute(&self, registry: &mut Registry) {
+    pub async fn execute(&self, registry: &mut Registry) {
         let mut executing = Vec::new();
 
         let mut nodes_iter = self.graph.nodes.iter().enumerate();
@@ -918,7 +1045,7 @@ impl Scheduler {
                     let WorkUnit(id, registry, system) = rx.blocking_recv().expect("?");
 
                     unsafe {
-                        system.as_ref().unwrap().execute(registry, ());
+                        system.as_ref().unwrap().execute(registry, &mut ());
                     }
 
                     id

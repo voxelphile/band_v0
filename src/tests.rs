@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 
 use crate::*;
 
-#[derive(Debug)]
+#[derive(Debug, Component, PartialEq)]
 pub struct DropTest {
     s: u32,
 }
@@ -13,7 +13,7 @@ impl Drop for DropTest {
     fn drop(&mut self) {}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Component, PartialEq)]
 pub struct Tuple([usize; 3]);
 
 //#[test]
@@ -22,22 +22,22 @@ fn it_works() {
 
     let e1 = registry.spawn();
 
-    registry.insert(e1, "Hello, e1!");
+    registry.insert(e1, Str("Hello, e1!".to_owned()));
 
     let e2 = registry.spawn();
 
-    registry.insert(e2, "Hello, e2!");
+    registry.insert(e2, Str("Hello, e2!".to_owned()));
 
-    registry.insert(e1, 2usize);
+    registry.insert(e1, Num(2usize));
 
-    registry.insert(e2, 3usize);
+    registry.insert(e2, Num(3usize));
 
     registry.insert(e1, DropTest { s: 5 });
 
     registry.despawn(e1);
 
-    assert_eq!(registry.remove::<&'static str>(e2).unwrap(), "Hello, e2!");
-    assert_eq!(registry.remove::<usize>(e2).unwrap(), 3usize);
+    assert_eq!(registry.remove::<Str>(e2).unwrap(), Str("Hello, e2!".to_owned()));
+    assert_eq!(registry.remove::<Num>(e2).unwrap(), Num(3usize));
 }
 
 #[test]
@@ -47,11 +47,11 @@ fn it_works2() {
     for i in 0..1000usize {
         let e = registry.spawn();
         if i % 5 == 0 {
-            registry.insert(e, "Hello, e!".to_owned() + &i.to_string());
+            registry.insert(e, Str("Hello, e!".to_owned() + &i.to_string()));
         }
         registry.insert(e, Tuple([i, i + 5, i + 27]));
         if i % 10 == 0 {
-            registry.insert(e, i);
+            registry.insert(e, Num(i));
         }
         mapping.insert(e, i);
     }
@@ -59,7 +59,7 @@ fn it_works2() {
     use crate::QueryExt;
     let mut timing = Vec::with_capacity(10000);
     let mut last = time::Instant::now();
-    for (a, b) in <(&usize, &String)>::query(&mut registry) {
+    for (a, b) in <(&Num, &Str)>::query(&mut registry) {
         let now = time::Instant::now();
 
         timing.push(now.duration_since(last).as_nanos());
@@ -68,7 +68,7 @@ fn it_works2() {
     }
 
     for (entity, _, Tuple([i1, i2, i3]), string) in
-        <(Entity, Without<usize>, &Tuple, Option<&String>)>::query(&mut registry)
+        <(Entity, Without<Num>, &Tuple, Option<&Str>)>::query(&mut registry)
     {
         if let Some(s) = string {
             dbg!(s);
@@ -90,16 +90,16 @@ fn it_works2() {
     for i in 1000..2000usize {
         let e = registry.spawn();
         if i % 5 == 0 {
-            registry.insert(e, "Hello, e!".to_owned() + &i.to_string());
+            registry.insert(e, Str("Hello, e!".to_owned() + &i.to_string()));
         }
         registry.insert(e, Tuple([i, i + 5, i + 27]));
         if i % 10 == 0 {
-            registry.insert(e, i);
+            registry.insert(e, Num(i));
         }
         mapping.insert(e, i);
     }
     for (entity, _, Tuple([i1, i2, i3]), string) in
-        <(Entity, Without<usize>, &Tuple, Option<&String>)>::query(&mut registry)
+        <(Entity, Without<Num>, &Tuple, Option<&Str>)>::query(&mut registry)
     {
         if let Some(s) = string {
             dbg!(s);
@@ -134,26 +134,29 @@ fn sixth_system(e: Entity, d: &DropTest, t: &Tuple) {
     thread::sleep(Duration::from_millis(2));
 }
 fn seventh_system(e: Entity, d: &mut DropTest, t: &mut Tuple) {
-    tokio::time::sleep(Duration::from_millis(2));
+    thread::sleep(Duration::from_millis(2));
 }
+#[derive(Component, Debug, PartialEq)]
+pub struct Num(usize);
+#[derive(Component, Debug, PartialEq)]
+pub struct Str(String);
 #[tokio::test]
 async fn graph_works() {
     let mut registry = Registry::default();
-    for i in 0..10000usize {
+    for i in 0..100usize {
         let e = registry.spawn();
         println!("{}", i);
         if i % 2 == 0 {
             registry.insert(e, DropTest { s: i as u32 });
         }
         if i % 5 == 0 {
-            registry.insert(e, "Hello, e!".to_owned() + &i.to_string());
+            registry.insert(e, Str("Hello, e!".to_owned() + &i.to_string()));
         }
         registry.insert(e, Tuple([i, i + 5, i + 27]));
         if i % 10 == 0 {
-            registry.insert(e, i);
+            registry.insert(e, Num(i));
         }
     }
-    let i = std::time::Instant::now();
     let mut scheduler = Scheduler::new(8);
     scheduler.add(first_system);
     scheduler.add(second_system);
@@ -163,6 +166,7 @@ async fn graph_works() {
     scheduler.add(sixth_system);
     scheduler.add(seventh_system);
     dbg!("start");
+    let i = std::time::Instant::now();
     scheduler.execute(&mut registry).await;
     dbg!(std::time::Instant::now().duration_since(i));
     dbg!("vs");

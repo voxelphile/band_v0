@@ -1,6 +1,7 @@
 use crate::{query::*, Registry};
 use async_trait::async_trait;
 use futures::Future;
+use pathfinding::prelude::connected_components;
 use std::marker::PhantomData;
 use std::{any::TypeId, collections::*};
 use tokio::sync::{mpsc::*, oneshot};
@@ -149,11 +150,12 @@ impl<'a, QQ: ?Sized + 'static, A: Queryable<QQ> + Send + QuerySync<QQ> + 'static
 band_proc_macro::make_systems!(16);
 
 pub type NodeId = usize;
-pub type Node = Box<dyn System<(), (), Param = ()>>;
-#[derive(Default)]
+pub type Node = std::sync::Arc<dyn System<(), (), Param = ()> + Send + Sync>;
+#[derive(Default, Clone)]
 pub struct Graph {
     nodes: Vec<Node>,
     dependencies: Vec<Vec<NodeId>>,
+    connected_sets: Vec<HashSet<NodeId>>,
 }
 
 impl Graph {
@@ -189,30 +191,38 @@ impl Graph {
         }
 
         self.dependencies.push(dependencies);
+
+        self.connected_sets();
+    }
+
+    fn connected_sets(&mut self) {
+        let mut starts = vec![];
+        for node in (0..self.nodes.len()).rev() {
+            if self.dependencies[node].iter().any(|id| starts.contains(id)) {
+                break;
+            }
+            starts.push(node);
+        }
+        self.connected_sets =
+            connected_components(&starts, |id| self.dependencies[*id].iter().copied());
     }
 }
 
+#[derive(Default)]
 pub struct Scheduler {
     graph: Graph,
-    work_tx: UnboundedSender<WorkUnit>,
-    work_rx: UnboundedReceiver<WorkUnit>,
 }
 
 pub struct WorkUnit(NodeId, *mut Registry, *mut dyn System<(), (), Param = ()>);
-
 unsafe impl Send for WorkUnit {}
 unsafe impl Sync for WorkUnit {}
 
-impl Scheduler {
-    pub fn new() -> Self {
-        let (work_tx, work_rx) = unbounded_channel();
+#[derive(Clone, Copy)]
+pub struct RegistryPtr(*mut Registry);
+unsafe impl Send for RegistryPtr {}
+unsafe impl Sync for RegistryPtr {}
 
-        Self {
-            graph: Default::default(),
-            work_tx,
-            work_rx,
-        }
-    }
+impl Scheduler {
     pub fn add_seq<
         AA: 'static,
         A: Queryable<AA> + 'static + Send + QuerySync<AA>,
@@ -222,7 +232,7 @@ impl Scheduler {
         system: T,
     ) {
         let sub_system = Box::new(system);
-        let wrapper_system = Box::new(WrapperSystem::<AA, A, Seq> {
+        let wrapper_system = std::sync::Arc::new(WrapperSystem::<AA, A, Seq> {
             sub_system,
             marker: PhantomData,
         });
@@ -237,7 +247,7 @@ impl Scheduler {
         system: T,
     ) {
         let sub_system = Box::new(system);
-        let wrapper_system = Box::new(WrapperSystem::<AA, A, Par> {
+        let wrapper_system = std::sync::Arc::new(WrapperSystem::<AA, A, Par> {
             sub_system,
             marker: PhantomData,
         });
@@ -252,13 +262,16 @@ impl Scheduler {
         system: T,
     ) {
         let sub_system = Box::new(system);
-        let wrapper_system = Box::new(WrapperSystem::<AA, A, Async> {
+        let wrapper_system = std::sync::Arc::new(WrapperSystem::<AA, A, Async> {
             sub_system,
             marker: PhantomData,
         });
         self.graph.add(wrapper_system);
     }
+
     pub async fn execute(&self, registry: &mut Registry) {
+        let registry_ptr = RegistryPtr(registry);
+
         fn work_executor(work_unit: WorkUnit) -> impl Future<Output = NodeId> + Send + 'static {
             let (tx, rx) = oneshot::channel();
             let _ = tx.send(work_unit);
@@ -280,38 +293,59 @@ impl Scheduler {
             }
         }
 
-        let mut nodes_iter = self.graph.nodes.iter().enumerate().peekable();
+        let mut masters = vec![];
 
-        'a: loop {
-            let mut futures = Vec::new();
-            let mut executing = Vec::<NodeId>::new();
+        for set in &self.graph.connected_sets {
+            let dependencies = self.graph.dependencies.clone();
 
-            loop {
-                if nodes_iter.peek().is_none() {
+            let nodes = self
+                .graph
+                .nodes
+                .clone()
+                .into_iter()
+                .enumerate()
+                .filter(|(id, _)| set.contains(id))
+                .collect::<Vec<_>>();
+
+            masters.push(tokio::spawn(async move {
+                let registry = registry_ptr;
+                let mut nodes_iter = nodes.into_iter().peekable();
+
+                'a: loop {
+                    let mut futures = Vec::new();
+                    let mut executing = Vec::<NodeId>::new();
+
+                    loop {
+                        if nodes_iter.peek().is_none() {
+                            futures::future::join_all(futures).await;
+                            break 'a;
+                        }
+
+                        if executing
+                            .iter()
+                            .any(|id| dependencies[nodes_iter.peek().unwrap().0].contains(id))
+                        {
+                            break;
+                        }
+
+                        let (id, node) = nodes_iter.next().unwrap();
+
+                        executing.push(id);
+
+                        let work_unit =
+                            WorkUnit(id, registry.0, std::sync::Arc::as_ptr(&node) as *mut _);
+
+                        let handle: tokio::task::JoinHandle<NodeId> =
+                            tokio::spawn(work_executor(work_unit));
+
+                        futures.push(handle);
+                    }
+
                     futures::future::join_all(futures).await;
-                    break 'a;
                 }
-
-                if executing
-                    .iter()
-                    .any(|id| self.graph.dependencies[nodes_iter.peek().unwrap().0].contains(&id))
-                {
-                    break;
-                }
-
-                let (id, node) = nodes_iter.next().unwrap();
-
-                executing.push(id);
-
-                let work_unit = WorkUnit(id, registry, (&**node) as *const _ as *mut _);
-
-                let handle: tokio::task::JoinHandle<NodeId> =
-                    tokio::spawn(work_executor(work_unit));
-
-                futures.push(handle);
-            }
-
-            futures::future::join_all(futures).await;
+            }));
         }
+
+        futures::future::join_all(masters).await;
     }
 }

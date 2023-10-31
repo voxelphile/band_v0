@@ -97,7 +97,7 @@ async fn graph_works() {
     registry.create(EntityCounter {
         map: Default::default(),
     });
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = Scheduler::default();
     scheduler.add_par(first_system);
     scheduler.add_par(second_system);
     scheduler.add_par(third_system);

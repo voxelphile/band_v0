@@ -14,3 +14,4 @@ futures = "0.3.28"
 band_proc_macro = {  path = "./band_proc_macro" }
 async-trait = "0.1.74"
 rayon = "*"
+pathfinding = "*"

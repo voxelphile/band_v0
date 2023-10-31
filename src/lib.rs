@@ -1,4 +1,4 @@
-#![feature(fn_traits, async_closure)]
+#![feature(fn_traits, async_closure, let_chains)]
 pub mod archetype;
 pub mod entity;
 pub mod query;

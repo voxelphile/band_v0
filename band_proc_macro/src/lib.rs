@@ -123,10 +123,10 @@ pub fn make_systems(input: TokenStream) -> TokenStream {
     let mut result = String::new();
     for len in 1..=max_len {
         result.push_str("#[async_trait::async_trait]\n");
-        result.push_str("impl<R: Future<Output = ()> + Send, ");
+        result.push_str("impl<R: Future<Output = ()> + Send + Sync, ");
         for i in 0..len {
-            result.push_str(&format!("TT{}, ", i));
-            result.push_str(&format!("T{}: Queryable<TT{}> + 'static, ", i, i));
+            result.push_str(&format!("TT{}: Send + Sync, ", i));
+            result.push_str(&format!("T{}: Queryable<TT{}> + Send + Sync + QuerySync<TT{}> + 'static, ", i, i, i));
         }
         result.push_str("Function: Fn(");
         for i in 0..len {
@@ -151,14 +151,14 @@ pub fn make_systems(input: TokenStream) -> TokenStream {
         }
         result.push_str(");\n");
         result.push_str(
-            "async fn execute(&self, SystemPayload { param: a, .. }: SystemPayload<Self::Param>) {\n",
+            "async fn execute(&self, payload: SystemPayload<Self::Param>) {\n",
         );
         result.push_str("let (");
         for i in 0..len {
             let end = if i == len - 1 { "" } else { ", " };
             result.push_str(&format!("t{}{}", i, end));
         }
-        result.push_str(") = unsafe { a.read() };");
+        result.push_str(") = unsafe { payload.param.read() };");
         result.push_str("self.call((");
         for i in 0..len {
             let end = if i == len - 1 && len != 1 { "" } else { ", " };

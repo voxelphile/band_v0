@@ -97,10 +97,32 @@ async fn graph_works() {
     registry.create(EntityCounter {
         map: Default::default(),
     });
+
+   
+// async fn first_system(e: Entity, d: &mut DropTest, t: &mut DropTest2) {
+//     mem::swap(&mut d.s, &mut t.s);
+// }
+// async fn second_system(e: Entity, d: &mut DropTest3, t: &mut DropTest4) {
+//     mem::swap(&mut d.s, &mut t.s);
+// }
+// async fn third_system(e: Entity, d: &mut DropTest3, t: &mut DropTest5) {
+//     mem::swap(&mut d.s, &mut t.s);
+// }
+    let i = std::time::Instant::now();
+    for (d, t) in <(&mut DropTest, &mut DropTest2)>::query(&mut registry) {
+        mem::swap(&mut d.s, &mut t.s);
+    }
+    for (d, t) in <(&mut DropTest3, &mut DropTest4)>::query(&mut registry) {
+        mem::swap(&mut d.s, &mut t.s);
+    }
+    for (d, t) in <(&mut DropTest3, &mut DropTest5)>::query(&mut registry) {
+        mem::swap(&mut d.s, &mut t.s);
+    }
+    println!("{:?}", std::time::Instant::now().duration_since(i));
     let mut scheduler = Scheduler::default();
-    scheduler.add_par(first_system);
-    scheduler.add_par(second_system);
-    scheduler.add_par(third_system);
+    scheduler.add_seq(first_system);
+    scheduler.add_seq(second_system);
+    scheduler.add_seq(third_system);
 
     let i = std::time::Instant::now();
     scheduler.execute(&mut registry).await;

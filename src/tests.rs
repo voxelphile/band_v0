@@ -57,7 +57,7 @@ async fn third_system(e: Entity, d: &mut DropTest3, t: &mut DropTest5) {
 pub struct Num(usize);
 #[derive(Component, Debug, PartialEq)]
 pub struct Str(String);
-#[tokio::test(flavor = "multi_thread", worker_threads = 7)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 15)]
 async fn graph_works() {
     let mut registry = Registry::default();
     let mut a = vec![10; 60000];

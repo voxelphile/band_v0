@@ -5,6 +5,7 @@ pub mod query;
 pub mod scheduler;
 pub mod storage;
 use archetype::*;
+use band_proc_macro::make_bundle_tuples;
 use core::slice;
 use entity::*;
 pub mod prelude {
@@ -27,25 +28,126 @@ mod tests;
 
 use hashbrown::HashMap;
 
+pub type ComponentId = TypeId;
+
 pub trait Component: 'static + Send + Sync {
-    fn id(&self) -> TypeId;
+    fn id(&self) -> ComponentId;
+    fn name(&self) -> &'static str;
     fn size(&self) -> usize;
 }
+
+pub trait ComponentBundle {
+    fn into_component_iter(self) -> std::vec::IntoIter<Box<dyn Component>>;
+}
+
+impl ComponentBundle for Vec<Box<dyn Component>> {
+    fn into_component_iter(self) -> std::vec::IntoIter<Box<dyn Component>> {
+        self.into_iter()
+    }
+}
+
+make_bundle_tuples!(32);
+
+#[derive(Clone)]
+pub struct RegistryHandle(*mut Inner, std::sync::Arc<()>);
+
+impl Drop for RegistryHandle {
+    fn drop(&mut self) {
+        if std::sync::Arc::strong_count(&self.1) == 2 {
+            let inner = unsafe { self.0.as_mut().unwrap() };
+
+            while let Ok(command) = inner.command_rx.try_recv() {
+                match command {
+                    query::Command::Insert(entity, bundle) => inner.insert(entity, bundle),
+                    query::Command::Spawn(bundle) => {
+                        let entity = inner.spawn();
+                        inner.insert(entity, bundle);
+                    }
+                }
+            }
+        }
+    }
+}
+
+unsafe impl Send for RegistryHandle {}
 
 pub trait Resource: 'static + Send {
     fn id(&self) -> TypeId;
     fn size(&self) -> usize;
 }
 
-#[derive(Default)]
 pub struct Registry {
+    inner: Box<Inner>,
+    handle: RegistryHandle,
+}
+
+pub(crate) struct Inner {
     entities: Entities,
     mapping: HashMap<Entity, Archetype>,
     storage: HashMap<Archetype, Storage>,
     resources: HashMap<TypeId, Vec<u8>>,
+    command_rx: std::sync::mpsc::Receiver<query::Command>,
+    command_tx: std::sync::mpsc::Sender<query::Command>,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        let (command_tx, command_rx) = std::sync::mpsc::channel();
+        let mut inner = Box::new(Inner {
+            entities: Default::default(),
+            mapping: Default::default(),
+            storage: Default::default(),
+            resources: Default::default(),
+            command_rx,
+            command_tx,
+        });
+        let handle = RegistryHandle(inner.as_mut(), std::sync::Arc::default());
+        Self { inner, handle }
+    }
 }
 
 impl Registry {
+    pub(crate) fn handle(&mut self) -> RegistryHandle {
+        self.handle.clone()
+    }
+    pub fn spawn(&mut self) -> Entity {
+        self.inner.spawn()
+    }
+    pub fn despawn(&mut self, entity: Entity) {
+        self.inner.despawn(entity)
+    }
+    pub fn create<T: Resource>(&mut self, resource: T) {
+        self.inner.create(resource)
+    }
+    pub fn resource<'a, 'b, T: Resource>(&'a mut self) -> Option<&'b T> {
+        self.inner.resource()
+    }
+
+    pub fn resource_mut<'a, 'b, T: Resource>(&'a mut self) -> Option<&'b mut T> {
+        self.inner.resource_mut()
+    }
+
+    pub fn destroy<T: Resource>(&mut self) -> Option<T> {
+        self.inner.destroy()
+    }
+
+    pub fn insert<C: ComponentBundle>(&mut self, entity: Entity, bundle: C) {
+        self.inner.insert(entity, bundle)
+    }
+    pub fn remove<T: Component>(&mut self, entity: Entity) -> Option<T> {
+        self.inner.remove(entity)
+    }
+    pub fn get<T: Component>(&self, entity: Entity) -> Option<&T> {
+        self.inner.get(entity)
+    }
+    pub fn get_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T> {
+        self.inner.get_mut(entity)
+    }
+    pub fn dbg_print(&self, entity: Entity) {
+        self.inner.dbg_print(entity)
+    }
+}
+impl Inner {
     pub fn spawn(&mut self) -> Entity {
         let e = self.entities.spawn();
         self.mapping.insert(e, Default::default());
@@ -95,14 +197,18 @@ impl Registry {
         Some(unsafe { (bytes.as_ptr() as *const _ as *const T).read() })
     }
 
-    pub fn insert<T: Component>(&mut self, entity: Entity, component: T) {
+    pub fn insert<C: ComponentBundle>(&mut self, entity: Entity, bundle: C) {
+        let components = bundle.into_component_iter().collect::<Vec<_>>();
+
         let Some(mut archetype) = self.mapping.remove(&entity) else {
             return;
         };
 
-        if archetype.translation(component.id()).is_some() {
-            self.mapping.insert(entity, archetype);
-            return;
+        for component in &components {
+            if archetype.translation(component.id()).is_some() {
+                self.mapping.insert(entity, archetype);
+                return;
+            }
         }
 
         let (mut data, mut table) = if archetype.len != 0 {
@@ -116,49 +222,53 @@ impl Registry {
             .iter()
             .cloned()
             .map(Option::unwrap)
-            .map(|x| x)
             .take(archetype.len)
             .collect::<Vec<_>>();
 
-        let mut trimmed_type_ids = trimmed_archetype
+        let trimmed_type_ids = trimmed_archetype
             .iter()
             .map(|x| &x.ty)
             .cloned()
             .collect::<Vec<_>>();
 
-        let result = trimmed_type_ids.binary_search(&component.id());
+        for component in components {
+            let result = trimmed_type_ids.binary_search(&component.id());
 
-        let idx = if result.is_ok() {
-            panic!("?")
-        } else {
-            result.unwrap_err()
-        };
+            let idx = if result.is_ok() {
+                panic!("?")
+            } else {
+                result.unwrap_err()
+            };
 
-        let bytes =
-            unsafe { slice::from_raw_parts(&component as *const _ as *const u8, component.size()) }
-                .to_vec();
+            let bytes = unsafe {
+                slice::from_raw_parts(&component as *const _ as *const u8, component.size())
+            }
+            .to_vec();
 
-        trimmed_archetype.insert(
-            idx,
-            ArchetypeInfo {
-                ty: component.id(),
-                size: component.size(),
-                name: any::type_name::<T>(),
-                state: ArchetypeState::Component,
-            },
-        );
+            trimmed_archetype.insert(
+                idx,
+                ArchetypeInfo {
+                    ty: component.id(),
+                    size: component.size(),
+                    name: component.name(),
+                    state: ArchetypeState::Component,
+                },
+            );
+
+            archetype.len = trimmed_archetype.len();
+
+            let size_up_to = archetype.size_up_to(idx);
+
+            data.splice(size_up_to..size_up_to, bytes);
+
+            table.insert(idx, component);
+        }
+
         debug_assert!(archetype.len + 1 < 32, "too many components in storage");
 
-        archetype.len = trimmed_archetype.len();
         for (i, info) in trimmed_archetype.into_iter().enumerate() {
             archetype.info[i] = Some(info);
         }
-
-        let size_up_to = archetype.size_up_to(idx);
-
-        data.splice(size_up_to..size_up_to, bytes);
-
-        table.insert(idx, Box::new(component));
 
         self.storage
             .entry(archetype.clone())

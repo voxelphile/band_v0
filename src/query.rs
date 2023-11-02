@@ -1,4 +1,6 @@
-use crate::{archetype::*, entity::Entity, Component, Registry, Resource};
+use crate::{
+    archetype::*, entity::Entity, Component, ComponentBundle, Registry, RegistryHandle, Resource,
+};
 use rayon::iter::*;
 use std::{any, any::TypeId, collections::*, marker::PhantomData, mem, ptr};
 
@@ -21,17 +23,61 @@ pub trait Queryable<T: ?Sized> {
         storage_archetype: &Archetype,
         query_archetype: &Archetype,
     );
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self;
+    fn get(state: &mut QueryState) -> Self;
     fn refs(deps: &mut HashSet<TypeId>) {}
     fn muts(deps: &mut HashSet<TypeId>) {}
 }
+
+pub(crate) enum Command {
+    Spawn(Vec<Box<dyn Component>>),
+    Insert(Entity, Vec<Box<dyn Component>>),
+}
+
+#[derive(Clone)]
+pub struct Commands {
+    tx: std::sync::mpsc::Sender<Command>,
+    handle: RegistryHandle,
+}
+
+impl Commands {
+    fn spawn(&mut self, bundle: impl ComponentBundle) {
+        self.tx
+            .send(Command::Spawn(bundle.into_component_iter().collect()));
+    }
+    fn insert(&mut self, entity: Entity, bundle: impl ComponentBundle) {
+        self.tx.send(Command::Insert(
+            entity,
+            bundle.into_component_iter().collect(),
+        ));
+    }
+}
+
+impl<'a, T> Queryable<T> for &'a mut Commands {
+    type Target = Commands;
+    fn add(archetype: &mut Archetype) {}
+    fn get(state: &mut QueryState) -> Self {
+        unsafe { mem::transmute::<&'_ mut Commands, &'a mut Commands>(state.commands) }
+    }
+    fn translations(
+        translations: &mut Vec<usize>,
+        storage_archetype: &Archetype,
+        query_archetype: &Archetype,
+    ) {
+    }
+}
+
+pub struct QueryState<'a> {
+    commands: &'a mut Commands,
+    registry: *mut Registry,
+    archetype: &'a Archetype,
+    ptr: *mut u8,
+    entity: *const Entity,
+    translations: &'a [usize],
+    idx: &'a mut usize,
+}
+
+unsafe impl Send for QueryState<'_> {}
+unsafe impl Sync for QueryState<'_> {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Without<T>(PhantomData<T>);
@@ -48,15 +94,7 @@ impl<T> Queryable<T> for () {
     ) {
     }
 
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-    }
+    fn get(state: &mut QueryState) -> Self {}
 }
 
 pub struct ComponentMarker;
@@ -119,14 +157,7 @@ where
     ) {
     }
 
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
+    fn get(state: &mut QueryState) -> Self {
         Without(PhantomData)
     }
 }
@@ -186,15 +217,9 @@ where
         }
     }
 
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        if archetype
+    fn get(state: &mut QueryState) -> Self {
+        if state
+            .archetype
             .info
             .iter()
             .find(|info| {
@@ -205,7 +230,7 @@ where
             })
             .is_some()
         {
-            let c = Some(T::get(registry, archetype, ptr, entity, translations, idx));
+            let c = Some(T::get(state));
             c
         } else {
             None
@@ -277,16 +302,9 @@ where
         }
     }
 
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
+    fn get(state: &mut QueryState) -> Self {
         unsafe {
-            (&mut registry.as_mut().unwrap().resource_mut::<T::Target>()
+            (&mut state.registry.as_mut().unwrap().resource_mut::<T::Target>()
                 as *mut Option<&mut T::Target>)
                 .cast::<Option<T>>()
                 .read()
@@ -355,16 +373,13 @@ impl<'a, T: Component> Queryable<ComponentMarker> for &'a T {
         }
     }
 
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        let c = unsafe { (ptr.add(translations[*idx]) as *const T).as_ref().unwrap() };
-        *idx += 1;
+    fn get(state: &mut QueryState) -> Self {
+        let c = unsafe {
+            (state.ptr.add(state.translations[*state.idx]) as *const T)
+                .as_ref()
+                .unwrap()
+        };
+        *state.idx += 1;
         c
     }
 
@@ -426,16 +441,13 @@ impl<'a, T: Component> Queryable<ComponentMarker> for &'a mut T {
         }
     }
 
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        let c = unsafe { (ptr.add(translations[*idx]) as *mut T).as_mut().unwrap() };
-        *idx += 1;
+    fn get(state: &mut QueryState) -> Self {
+        let c = unsafe {
+            (state.ptr.add(state.translations[*state.idx]) as *mut T)
+                .as_mut()
+                .unwrap()
+        };
+        *state.idx += 1;
         c
     }
 
@@ -496,16 +508,10 @@ impl<'a, T: Resource> Queryable<ResourceMarker> for &'a T {
         }
     }
 
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
+    fn get(state: &mut QueryState) -> Self {
         unsafe {
-            registry
+            state
+                .registry
                 .as_mut()
                 .unwrap()
                 .resource()
@@ -566,16 +572,10 @@ impl<'a, T: Resource> Queryable<ResourceMarker> for &'a mut T {
         }
     }
 
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
+    fn get(state: &mut QueryState) -> Self {
         unsafe {
-            registry
+            state
+                .registry
                 .as_mut()
                 .unwrap()
                 .resource_mut()
@@ -601,20 +601,14 @@ impl Queryable<EntityMarker> for Entity {
     }
     fn add(archetype: &mut Archetype) {}
 
-    fn get(
-        registry: *mut Registry,
-        archetype: &Archetype,
-        ptr: *mut u8,
-        entity: *const Entity,
-        translations: &[usize],
-        idx: &mut usize,
-    ) -> Self {
-        unsafe { ptr::read(entity) }
+    fn get(state: &mut QueryState) -> Self {
+        unsafe { ptr::read(state.entity) }
     }
 }
 
 pub struct Query<'a, QQ: ?Sized, Q: Queryable<QQ> + ?Sized> {
     registry: *mut Registry,
+    commands: Commands,
     mapping: Vec<(Archetype, usize, usize, Vec<usize>, *mut u8, *const Entity)>,
     inner: usize,
     outer: usize,
@@ -636,7 +630,7 @@ impl<'a, QQ: ?Sized, T: Queryable<QQ>> QueryExt<QQ> for T {
 
         let mut mapping = vec![];
 
-        for (storage_archetype, storage) in &mut registry.storage {
+        for (storage_archetype, storage) in &mut registry.inner.storage {
             if storage.data.len() == 0 {
                 continue;
             }
@@ -661,6 +655,10 @@ impl<'a, QQ: ?Sized, T: Queryable<QQ>> QueryExt<QQ> for T {
 
         Query {
             registry,
+            commands: Commands {
+                tx: registry.inner.command_tx.clone(),
+                handle: registry.handle(),
+            },
             mapping,
             inner: 0,
             outer: 0,
@@ -693,14 +691,15 @@ impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Iterator for Query<'a, QQ, Q> {
 
         self.inner += 1;
 
-        Some(Q::get(
-            self.registry,
+        Some(Q::get(&mut QueryState {
+            registry: self.registry,
+            commands: &mut self.commands,
             archetype,
             ptr,
             entity,
             translations,
-            &mut 0,
-        ))
+            idx: &mut 0,
+        }))
     }
 }
 
@@ -708,6 +707,7 @@ pub struct ParallelQueryInner<'a, QQ: ?Sized, Q: Queryable<QQ> + ?Sized> {
     registry: *mut Registry,
     mapping: ParallelQueryPayload,
     inner: usize,
+    commands: Commands,
     marker: PhantomData<(&'a Q, &'a QQ)>,
 }
 
@@ -739,7 +739,7 @@ pub struct ParallelQueryPayload {
 unsafe impl Send for ParallelQueryPayload {}
 unsafe impl Sync for ParallelQueryPayload {}
 
-band_proc_macro::make_tuples!(16);
+band_proc_macro::make_query_tuples!(16);
 
 unsafe impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Send for ParallelQuery<'a, QQ, Q> {}
 unsafe impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Sync for ParallelQuery<'a, QQ, Q> {}
@@ -756,7 +756,7 @@ impl<'a, QQ: ?Sized, T: Queryable<QQ> + Send + QuerySync<QQ> + Sized> ParallelQu
 
         let mut mapping = vec![];
 
-        for (storage_archetype, storage) in &mut registry.storage {
+        for (storage_archetype, storage) in &mut registry.inner.storage {
             if storage.data.len() == 0 {
                 continue;
             }
@@ -783,6 +783,10 @@ impl<'a, QQ: ?Sized, T: Queryable<QQ> + Send + QuerySync<QQ> + Sized> ParallelQu
             iter: Box::new(mapping.into_iter().flat_map(|mapping| ParallelQueryInner {
                 registry,
                 mapping,
+                commands: Commands {
+                    tx: registry.inner.command_tx.clone(),
+                    handle: registry.handle(),
+                },
                 inner: 0,
                 marker: PhantomData,
             })),
@@ -836,13 +840,14 @@ impl<'a, QQ: ?Sized, Q: Queryable<QQ>> Iterator for ParallelQueryInner<'a, QQ, Q
 
         self.inner += 1;
 
-        Some(Q::get(
-            self.registry,
+        Some(Q::get(&mut QueryState {
+            registry: self.registry,
+            commands: &mut self.commands,
             archetype,
             ptr,
             entity,
             translations,
-            &mut 0,
-        ))
+            idx: &mut 0,
+        }))
     }
 }

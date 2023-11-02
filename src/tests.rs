@@ -71,43 +71,56 @@ async fn graph_works() {
     println!("{:?}", std::time::Instant::now().duration_since(i));
     for i in 0..10000usize {
         let e = registry.spawn();
-        registry.insert(e, DropTest { s: i as u32 });
-        registry.insert(e, DropTest2 { s: 10 + i as u32 });
+        registry.insert(e, (DropTest { s: i as u32 }, DropTest2 { s: i as u32 }));
     }
     for i in 0..10000usize {
         let e = registry.spawn();
-        registry.insert(e, DropTest { s: i as u32 });
-        registry.insert(e, DropTest2 { s: 10 + i as u32 });
-        registry.insert(e, DropTest3 { s: 30 + i as u32 });
+        registry.insert(
+            e,
+            (
+                DropTest { s: i as u32 },
+                DropTest2 { s: i as u32 },
+                DropTest3 { s: i as u32 },
+            ),
+        );
     }
     for i in 0..10000usize {
         let e = registry.spawn();
-        registry.insert(e, DropTest { s: i as u32 });
-        registry.insert(e, DropTest2 { s: 10 + i as u32 });
-        registry.insert(e, DropTest3 { s: 30 + i as u32 });
-        registry.insert(e, DropTest4 { s: 300 + i as u32 });
+        registry.insert(
+            e,
+            (
+                DropTest { s: i as u32 },
+                DropTest2 { s: i as u32 },
+                DropTest3 { s: i as u32 },
+                DropTest4 { s: i as u32 },
+            ),
+        );
     }
     for i in 0..10000usize {
         let e = registry.spawn();
-        registry.insert(e, DropTest { s: i as u32 });
-        registry.insert(e, DropTest2 { s: 10 + i as u32 });
-        registry.insert(e, DropTest3 { s: 30 + i as u32 });
-        registry.insert(e, DropTest5 { s: 300 + i as u32 });
+        registry.insert(
+            e,
+            (
+                DropTest { s: i as u32 },
+                DropTest2 { s: i as u32 },
+                DropTest3 { s: i as u32 },
+                DropTest5 { s: i as u32 },
+            ),
+        );
     }
     registry.create(EntityCounter {
         map: Default::default(),
     });
 
-   
-// async fn first_system(e: Entity, d: &mut DropTest, t: &mut DropTest2) {
-//     mem::swap(&mut d.s, &mut t.s);
-// }
-// async fn second_system(e: Entity, d: &mut DropTest3, t: &mut DropTest4) {
-//     mem::swap(&mut d.s, &mut t.s);
-// }
-// async fn third_system(e: Entity, d: &mut DropTest3, t: &mut DropTest5) {
-//     mem::swap(&mut d.s, &mut t.s);
-// }
+    // async fn first_system(e: Entity, d: &mut DropTest, t: &mut DropTest2) {
+    //     mem::swap(&mut d.s, &mut t.s);
+    // }
+    // async fn second_system(e: Entity, d: &mut DropTest3, t: &mut DropTest4) {
+    //     mem::swap(&mut d.s, &mut t.s);
+    // }
+    // async fn third_system(e: Entity, d: &mut DropTest3, t: &mut DropTest5) {
+    //     mem::swap(&mut d.s, &mut t.s);
+    // }
     let i = std::time::Instant::now();
     for (d, t) in <(&mut DropTest, &mut DropTest2)>::query(&mut registry) {
         mem::swap(&mut d.s, &mut t.s);

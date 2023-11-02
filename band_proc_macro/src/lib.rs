@@ -3,7 +3,45 @@ use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput, Lit};
 
 #[proc_macro]
-pub fn make_tuples(input: TokenStream) -> TokenStream {
+pub fn make_bundle_tuples(input: TokenStream) -> TokenStream {
+    let Lit::Int(max_len_lit) = parse_macro_input!(input as Lit) else {
+        panic!("?");
+    };
+    let max_len = max_len_lit.base10_parse::<usize>().unwrap();
+    let mut result = String::new();
+    for len in 2..=max_len {
+        result.push_str("impl<");
+        for i in 0..len {
+            let end = if i == len - 1 { "" } else { ", " };
+            result.push_str(&format!("T{}: Component{}", i, end));
+        }
+        result.push_str("> ComponentBundle for (");
+        for i in 0..len {
+            result.push_str(&format!("T{},", i));
+        }
+        result.push_str(") {\n");
+        result.push_str(
+            "fn into_component_iter(self)  -> std::vec::IntoIter<Box<dyn Component>> {\n",
+        );
+        result.push_str("let (");
+        for i in 0..len {
+            let end = if i == len - 1 { "" } else { ", " };
+            result.push_str(&format!("t{}{}", i, end));
+        }
+        result.push_str(") = self;");
+        result.push_str("vec![");
+        for i in 0..len {
+            let end = if i == len - 1 { "" } else { ", " };
+            result.push_str(&format!("Box::new(t{}) as Box<dyn Component>{}", i, end));
+        }
+        result.push_str("].into_iter()");
+        result.push_str("} }");
+    }
+    result.parse().unwrap()
+}
+
+#[proc_macro]
+pub fn make_query_tuples(input: TokenStream) -> TokenStream {
     let Lit::Int(max_len_lit) = parse_macro_input!(input as Lit) else {
         panic!("?");
     };
@@ -76,20 +114,12 @@ pub fn make_tuples(input: TokenStream) -> TokenStream {
 
         result.push_str(
             "fn get(\n\
-            registry: *mut Registry,\n\
-            archetype: &Archetype,\n\
-            ptr: *mut u8,\n\
-            entity: *const Entity, \n\
-            translations: &[usize], \n\
-            idx: &mut usize, \n\
+            state: &mut QueryState,
         ) -> Self {\n(\n",
         );
 
         for i in 0..len {
-            result.push_str(&format!(
-                "T{}::get(registry, archetype, ptr, entity, translations, idx),\n",
-                i
-            ));
+            result.push_str(&format!("T{}::get(state),\n", i));
         }
 
         result.push_str(")\n}\n");
@@ -126,7 +156,10 @@ pub fn make_systems(input: TokenStream) -> TokenStream {
         result.push_str("impl<R: Future<Output = ()> + Send + Sync, ");
         for i in 0..len {
             result.push_str(&format!("TT{}: Send + Sync, ", i));
-            result.push_str(&format!("T{}: Queryable<TT{}> + Send + Sync + QuerySync<TT{}> + 'static, ", i, i, i));
+            result.push_str(&format!(
+                "T{}: Queryable<TT{}> + Send + Sync + QuerySync<TT{}> + 'static, ",
+                i, i, i
+            ));
         }
         result.push_str("Function: Fn(");
         for i in 0..len {
@@ -150,9 +183,7 @@ pub fn make_systems(input: TokenStream) -> TokenStream {
             result.push_str(&format!("T{}{}", i, end));
         }
         result.push_str(");\n");
-        result.push_str(
-            "async fn execute(&self, payload: SystemPayload<Self::Param>) {\n",
-        );
+        result.push_str("async fn execute(&self, payload: SystemPayload<Self::Param>) {\n");
         result.push_str("let (");
         for i in 0..len {
             let end = if i == len - 1 { "" } else { ", " };
@@ -193,6 +224,9 @@ pub fn component_derive(input: TokenStream) -> TokenStream {
             }}\
             fn size(&self) -> usize {{\
                 ::std::mem::size_of::<Self>()\
+            }}\
+            fn name(&self) -> &'static str {{\
+                ::std::any::type_name::<Self>()\
             }}\
         }}",
         data.ident

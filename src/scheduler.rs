@@ -31,8 +31,14 @@ pub struct WrapperSystem<'a, QQ: ?Sized, T: Queryable<QQ>, S> {
     marker: PhantomData<(&'a T, S)>,
 }
 
-unsafe impl<'a, QQ: ?Sized, T: Queryable<QQ> + Send + Sync, S> Send for WrapperSystem<'a, QQ, T, S> {}
-unsafe impl<'a, QQ: ?Sized, T: Queryable<QQ> + Send + Sync, S> Sync for WrapperSystem<'a, QQ, T, S> {}
+unsafe impl<'a, QQ: ?Sized, T: Queryable<QQ> + Send + Sync, S> Send
+    for WrapperSystem<'a, QQ, T, S>
+{
+}
+unsafe impl<'a, QQ: ?Sized, T: Queryable<QQ> + Send + Sync, S> Sync
+    for WrapperSystem<'a, QQ, T, S>
+{
+}
 
 #[derive(Copy)]
 pub struct SubSystem<QQ: ?Sized, T: Queryable<QQ> + Send + Sync>(
@@ -50,8 +56,11 @@ unsafe impl<QQ: ?Sized, T: Queryable<QQ> + Send + Sync> Send for SubSystem<QQ, T
 unsafe impl<QQ: ?Sized, T: Queryable<QQ> + Send + Sync> Sync for SubSystem<QQ, T> {}
 
 #[async_trait]
-impl<'a, QQ: Send + Sync + ?Sized + 'static, A: Queryable<QQ> + Send + Sync + QuerySync<QQ> + 'static> System<(), ()>
-    for WrapperSystem<'a, QQ, A, Seq>
+impl<
+        'a,
+        QQ: Send + Sync + ?Sized + 'static,
+        A: Queryable<QQ> + Send + Sync + QuerySync<QQ> + 'static,
+    > System<(), ()> for WrapperSystem<'a, QQ, A, Seq>
 {
     type Param = ();
     async fn execute(&self, SystemPayload { registry, .. }: SystemPayload<Self::Param>) {
@@ -68,7 +77,8 @@ impl<'a, QQ: Send + Sync + ?Sized + 'static, A: Queryable<QQ> + Send + Sync + Qu
                     },
                 ));
             });
-        }).await;
+        })
+        .await;
     }
     fn ref_deps(&self) -> HashSet<TypeId> {
         let mut deps = Default::default();
@@ -82,8 +92,11 @@ impl<'a, QQ: Send + Sync + ?Sized + 'static, A: Queryable<QQ> + Send + Sync + Qu
     }
 }
 #[async_trait]
-impl<'a, QQ: Send + Sync + ?Sized + 'static, A: Queryable<QQ> + Send + Sync + QuerySync<QQ> + 'static> System<(), ()>
-    for WrapperSystem<'a, QQ, A, Par>
+impl<
+        'a,
+        QQ: Send + Sync + ?Sized + 'static,
+        A: Queryable<QQ> + Send + Sync + QuerySync<QQ> + 'static,
+    > System<(), ()> for WrapperSystem<'a, QQ, A, Par>
 {
     type Param = ();
     async fn execute(&self, SystemPayload { registry, .. }: SystemPayload<Self::Param>) {
@@ -91,16 +104,19 @@ impl<'a, QQ: Send + Sync + ?Sized + 'static, A: Queryable<QQ> + Send + Sync + Qu
         tokio::task::spawn_blocking(move || {
             let moved_sub_system = sub_system;
             use rayon::iter::ParallelIterator;
-            A::par_query(unsafe { moved_sub_system.0.0.as_mut().unwrap() }).for_each(|mut param| {
-                let SubSystem(registry, sub_system) = moved_sub_system.clone();
-                futures::executor::block_on(unsafe { sub_system.as_ref() }.unwrap().execute(
-                    SystemPayload {
-                        registry,
-                        param: &mut param as *mut _,
-                    },
-                ));
-            });
-        }).await;
+            A::par_query(unsafe { moved_sub_system.0 .0.as_mut().unwrap() }).for_each(
+                |mut param| {
+                    let SubSystem(registry, sub_system) = moved_sub_system.clone();
+                    futures::executor::block_on(unsafe { sub_system.as_ref() }.unwrap().execute(
+                        SystemPayload {
+                            registry,
+                            param: &mut param as *mut _,
+                        },
+                    ));
+                },
+            );
+        })
+        .await;
     }
     fn ref_deps(&self) -> HashSet<TypeId> {
         let mut deps = Default::default();
@@ -114,8 +130,11 @@ impl<'a, QQ: Send + Sync + ?Sized + 'static, A: Queryable<QQ> + Send + Sync + Qu
     }
 }
 #[async_trait]
-impl<'a, QQ: Send + Sync + ?Sized + 'static, A: Queryable<QQ> + Send + Sync + QuerySync<QQ> + 'static> System<(), ()>
-    for WrapperSystem<'a, QQ, A, Async>
+impl<
+        'a,
+        QQ: Send + Sync + ?Sized + 'static,
+        A: Queryable<QQ> + Send + Sync + QuerySync<QQ> + 'static,
+    > System<(), ()> for WrapperSystem<'a, QQ, A, Async>
 {
     type Param = ();
     async fn execute(&self, SystemPayload { registry, .. }: SystemPayload<Self::Param>) {
@@ -216,8 +235,6 @@ pub struct Scheduler {
     graph: Graph,
 }
 
-
-
 pub struct WorkUnit(NodeId, RegistryPtr, SystemPtr);
 unsafe impl Send for WorkUnit {}
 unsafe impl Sync for WorkUnit {}
@@ -230,8 +247,6 @@ unsafe impl Sync for RegistryPtr {}
 pub struct SystemPtr(*const (dyn System<(), (), Param = ()> + Send + Sync));
 unsafe impl Send for SystemPtr {}
 unsafe impl Sync for SystemPtr {}
-
-
 
 impl Scheduler {
     pub fn add_seq<
@@ -284,24 +299,21 @@ impl Scheduler {
         let registry_ptr = RegistryPtr(registry);
 
         async fn work_executor(rx: oneshot::Receiver<WorkUnit>) -> NodeId {
-            
-                let WorkUnit(id, registry, system) = rx.await.expect("?");
-                let payload = SystemPayload {
-                    registry,
-                    param: &mut (),
-                };
-                unsafe {
-                    let system_ref = system
-                    .0
-                        .as_ref()
-                        .unwrap();
+            let WorkUnit(id, registry, system) = rx.await.expect("?");
+            let payload = SystemPayload {
+                registry,
+                param: &mut (),
+            };
+            unsafe {
+                let system_ref = system.0.as_ref().unwrap();
 
-                    system_ref.execute(payload)
-                        .await;
-                }
+                system_ref.execute(payload).await;
+            }
 
-                id
+            id
         }
+
+        let _handle = registry.handle();
 
         let mut masters = vec![];
 
@@ -342,12 +354,15 @@ impl Scheduler {
 
                         executing.push(id);
 
-                        let work_unit =
-                            WorkUnit(id, registry, SystemPtr(std::sync::Arc::as_ptr(&node) as *const _));
+                        let work_unit = WorkUnit(
+                            id,
+                            registry,
+                            SystemPtr(std::sync::Arc::as_ptr(&node) as *const _),
+                        );
 
                         let (tx, rx) = oneshot::channel();
                         let _ = tx.send(work_unit);
-                        
+
                         let handle: tokio::task::JoinHandle<NodeId> =
                             tokio::spawn(work_executor(rx));
 
@@ -358,8 +373,6 @@ impl Scheduler {
                 }
             }));
         }
-
-        dbg!(masters.len());
 
         futures::future::join_all(masters).await;
     }
